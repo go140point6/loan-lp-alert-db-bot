@@ -13,17 +13,25 @@ function chunk(arr, size) {
   return out;
 }
 
+const { createDecimalFormatter } = require("../utils/intlNumberFormats");
+
+// 4 decimals, thousands separators
+const fmt4 = createDecimalFormatter(0, 4);
+
+function fmtNum(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return null;
+  return fmt4.format(n);
+}
+
 module.exports = {
   data: new SlashCommandBuilder()
     .setName("my-lp")
     .setDescription("Show current monitored LP positions."),
 
   async execute(interaction) {
-    // Decide ephemeral/public ONCE at the start (ephemeral is locked on first response)
     const ephFlags = ephemeralFlags();
 
     try {
-      // Ephemeral in prod, public in testing when EPHEMERALS_OFF=1
       await interaction.deferReply({ flags: ephFlags });
 
       const db = getDb();
@@ -32,22 +40,19 @@ module.exports = {
       const discordId = interaction.user.id;
       const discordName = interaction.user.globalName || interaction.user.username || null;
 
-      // Ensure user exists + keep name updated
       const userId = getOrCreateUserId(db, { discordId, discordName });
 
-      // DM onboarding check (keyed by users.id)
       const userRow = q.selUser.get(userId);
       const acceptsDm = userRow?.accepts_dm ?? 0;
 
       await ensureDmOnboarding({
         interaction,
         userId,
-        discordId, // logging only
+        discordId,
         acceptsDm,
         setUserDmStmt: q.setUserDm,
       });
 
-      // Summaries API (no alert side-effects)
       const { getLpSummaries } = require("../monitoring/lpMonitor");
 
       let summaries = await getLpSummaries();
@@ -58,7 +63,6 @@ module.exports = {
         return;
       }
 
-      // Sort so "interesting" positions show first
       summaries.sort((a, b) => {
         const rangeOrder = { OUT_OF_RANGE: 0, UNKNOWN: 1, IN_RANGE: 2 };
         const tierOrder = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, UNKNOWN: 4 };
@@ -77,6 +81,7 @@ module.exports = {
       const descLines = [
         "Current status of your monitored LP positions.",
         "_Range status is based on the current pool tick vs your position bounds._",
+        "_Amounts are estimated from liquidity + pool price; fees are current uncollected amounts when available._",
       ];
 
       const tierColorEmoji = {
@@ -91,11 +96,36 @@ module.exports = {
         const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"}) - ${s.tokenId}`;
         const valueLines = [];
 
+        const sym0 = s.token0Symbol || s.token0 || "?";
+        const sym1 = s.token1Symbol || s.token1 || "?";
+
         if (s.pairLabel) valueLines.push(`Pair: **${s.pairLabel}**`);
-        else if (s.token0 && s.token1) valueLines.push(`Pair: **${s.token0} - ${s.token1}**`);
+        else if (sym0 && sym1) valueLines.push(`Pair: **${sym0} - ${sym1}**`);
+
+        // ---- NEW: principal amounts
+        const a0 = fmtNum(s.amount0, 6);
+        const a1 = fmtNum(s.amount1, 6);
+        if (a0 != null || a1 != null) {
+          const p = [];
+          if (a0 != null) p.push(`**${a0} ${sym0}**`);
+          if (a1 != null) p.push(`**${a1} ${sym1}**`);
+          valueLines.push(`Principal: ${p.join(" + ")}`);
+        }
+
+        // ---- NEW: uncollected fees
+        const f0 = fmtNum(s.fees0, 6);
+        const f1 = fmtNum(s.fees1, 6);
+        if (f0 != null || f1 != null) {
+          const p = [];
+          if (f0 != null) p.push(`**${f0} ${sym0}**`);
+          if (f1 != null) p.push(`**${f1} ${sym1}**`);
+          valueLines.push(`Uncollected fees: ${p.join(" + ")}`);
+        }
 
         if (typeof s.lpPositionFrac === "number") {
-          valueLines.push(`Position in band: **${(s.lpPositionFrac * 100).toFixed(2)}%** from lower bound`);
+          valueLines.push(
+            `Position in band: **${(s.lpPositionFrac * 100).toFixed(2)}%** from lower bound`
+          );
         }
 
         if (typeof s.tickLower === "number" && typeof s.tickUpper === "number") {

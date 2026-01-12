@@ -1,16 +1,15 @@
 // ./events/onMessage.js
+// Example of a Bot saying "Bingo" to any message from a user (ignoring itself)
 
-const log = require("../utils/logger");
-
-/**
- * MessageCreate handler (currently no-op).
- */
 async function onMessage(message) {
-  if (message.author?.bot) return;
+  // if (message.author?.bot) return;
 
-  log.debug(`Message from ${message.author.tag}: ${message.content}`);
-  // Example:
-  // await message.reply("Bingo");
+  // if(message.author.bot) {
+  //   console.log(message);
+  //   }
+    
+  //   message.reply("Bingo")
+  //   console.log(message);
 }
 
 module.exports = { onMessage };

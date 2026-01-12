@@ -6,6 +6,11 @@
 // - Persists previous range status in alert_state.state_json (via alertEngine) - no extra tables
 // - Provider endpoints come from .env (FLR_MAINNET, XDC_MAINNET, etc.)
 // - Keeps existing range-tier logic + alertEngine integration intact
+//
+// Enhancements:
+// - amount0/amount1 principal amounts (Uniswap v3 math) from liquidity + slot0.sqrtPriceX96
+// - fees: prefer "callStatic collect" (simulated) to show current uncollected fees,
+//         fallback to tokensOwed0/tokensOwed1 when collect isn't available.
 
 const { ethers } = require("ethers");
 
@@ -13,6 +18,8 @@ const positionManagerAbi = require("../abi/positionManager.json");
 const uniswapV3FactoryAbi = require("../abi/uniswapV3Factory.json");
 const uniswapV3PoolAbi = require("../abi/uniswapV3Pool.json");
 const erc20MetadataAbi = require("../abi/erc20Metadata.json");
+const JSBI = require("jsbi");
+const { TickMath, SqrtPriceMath } = require("@uniswap/v3-sdk");
 
 const { getDb } = require("../db");
 const { getProviderForChain } = require("../utils/ethers/providers");
@@ -28,21 +35,17 @@ const CHAINS_CONFIG = {
 };
 
 // -----------------------------
-// Env parsing (assume validateEnv already enforced presence)
+// Env parsing
 // -----------------------------
 const LP_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 
 const LP_ALERT_MIN_TIER = String(process.env.LP_ALERT_MIN_TIER || "UNKNOWN").toUpperCase();
 if (!LP_TIER_ORDER.includes(LP_ALERT_MIN_TIER)) {
   logger.error(
-    `[Config] LP_ALERT_MIN_TIER must be one of ${LP_TIER_ORDER.join(
-      ", "
-    )}, got "${process.env.LP_ALERT_MIN_TIER}"`
+    `[Config] LP_ALERT_MIN_TIER must be one of ${LP_TIER_ORDER.join(", ")}, got "${process.env.LP_ALERT_MIN_TIER}"`
   );
   throw new Error(
-    `[Config] LP_ALERT_MIN_TIER must be one of ${LP_TIER_ORDER.join(
-      ", "
-    )}, got "${process.env.LP_ALERT_MIN_TIER}"`
+    `[Config] LP_ALERT_MIN_TIER must be one of ${LP_TIER_ORDER.join(", ")}, got "${process.env.LP_ALERT_MIN_TIER}"`
   );
 }
 
@@ -50,6 +53,39 @@ const LP_EDGE_WARN_FRAC = Number(process.env.LP_EDGE_WARN_FRAC);
 const LP_EDGE_HIGH_FRAC = Number(process.env.LP_EDGE_HIGH_FRAC);
 const LP_OUT_WARN_FRAC = Number(process.env.LP_OUT_WARN_FRAC);
 const LP_OUT_HIGH_FRAC = Number(process.env.LP_OUT_HIGH_FRAC);
+
+// -----------------------------
+// Standard Uniswap v3 math
+// -----------------------------
+function toJSBI(x) {
+  if (typeof x === "bigint") return JSBI.BigInt(x.toString());
+  return JSBI.BigInt(String(x));
+}
+
+function amountsForPosition({ sqrtPriceX96, tickLower, tickUpper, liquidity }) {
+  const L = toJSBI(liquidity);
+  const sqrtP = toJSBI(sqrtPriceX96);
+
+  const sqrtA = TickMath.getSqrtRatioAtTick(Number(tickLower));
+  const sqrtB = TickMath.getSqrtRatioAtTick(Number(tickUpper));
+
+  const sqrtLower = JSBI.lessThan(sqrtA, sqrtB) ? sqrtA : sqrtB;
+  const sqrtUpper = JSBI.lessThan(sqrtA, sqrtB) ? sqrtB : sqrtA;
+
+  let amount0 = JSBI.BigInt(0);
+  let amount1 = JSBI.BigInt(0);
+
+  if (JSBI.lessThanOrEqual(sqrtP, sqrtLower)) {
+    amount0 = SqrtPriceMath.getAmount0Delta(sqrtLower, sqrtUpper, L, true);
+  } else if (JSBI.lessThan(sqrtP, sqrtUpper)) {
+    amount0 = SqrtPriceMath.getAmount0Delta(sqrtP, sqrtUpper, L, true);
+    amount1 = SqrtPriceMath.getAmount1Delta(sqrtLower, sqrtP, L, true);
+  } else {
+    amount1 = SqrtPriceMath.getAmount1Delta(sqrtLower, sqrtUpper, L, true);
+  }
+
+  return { amount0Raw: amount0.toString(), amount1Raw: amount1.toString() };
+}
 
 // -----------------------------
 // Tier compare
@@ -62,9 +98,10 @@ function isLpTierAtLeast(tier, minTier) {
 }
 
 // -----------------------------
-// Token symbol cache (best-effort)
+// Token caches (best-effort)
 // -----------------------------
 const tokenSymbolCache = new Map();
+const tokenDecimalsCache = new Map();
 
 async function getTokenSymbol(provider, address) {
   const key = (address || "").toLowerCase();
@@ -76,14 +113,138 @@ async function getTokenSymbol(provider, address) {
   return symbol;
 }
 
+async function getTokenDecimals(provider, address) {
+  const key = (address || "").toLowerCase();
+  if (tokenDecimalsCache.has(key)) return tokenDecimalsCache.get(key);
+
+  const token = new ethers.Contract(address, erc20MetadataAbi, provider);
+  const decRaw = await token.decimals();
+  const dec = Number(decRaw);
+  const out = Number.isFinite(dec) ? dec : 18;
+  tokenDecimalsCache.set(key, out);
+  return out;
+}
+
+// -----------------------------
+// Compute fees owed from pool feeGrowth
+// -----------------------------
+
+const Q128 = 1n << 128n;
+
+function toBigIntish(v) {
+  // ethers v6 returns native bigint for uint256; v5 returns BigNumber-ish
+  if (typeof v === "bigint") return v;
+  return BigInt(v.toString());
+}
+
+async function computeFeesOwedFromPool({
+  pool,
+  currentTick,
+  tickLower,
+  tickUpper,
+  liquidity,
+  feeGrowthInside0LastX128,
+  feeGrowthInside1LastX128,
+  tokensOwed0,
+  tokensOwed1,
+}) {
+  const feeGrowthGlobal0X128 = toBigIntish(await pool.feeGrowthGlobal0X128());
+  const feeGrowthGlobal1X128 = toBigIntish(await pool.feeGrowthGlobal1X128());
+
+  const lower = await pool.ticks(Number(tickLower));
+  const upper = await pool.ticks(Number(tickUpper));
+
+  const lowerOut0 = toBigIntish(lower.feeGrowthOutside0X128 ?? lower[2]);
+  const lowerOut1 = toBigIntish(lower.feeGrowthOutside1X128 ?? lower[3]);
+  const upperOut0 = toBigIntish(upper.feeGrowthOutside0X128 ?? upper[2]);
+  const upperOut1 = toBigIntish(upper.feeGrowthOutside1X128 ?? upper[3]);
+
+  const tickCur = Number(currentTick);
+
+  // feeGrowthBelow/Above depends on where current tick is relative to bounds
+  const belowSub0 = feeGrowthGlobal0X128 > lowerOut0 ? (feeGrowthGlobal0X128 - lowerOut0) : 0n;
+  const belowSub1 = feeGrowthGlobal1X128 > lowerOut1 ? (feeGrowthGlobal1X128 - lowerOut1) : 0n;
+
+  const aboveSub0 = feeGrowthGlobal0X128 > upperOut0 ? (feeGrowthGlobal0X128 - upperOut0) : 0n;
+  const aboveSub1 = feeGrowthGlobal1X128 > upperOut1 ? (feeGrowthGlobal1X128 - upperOut1) : 0n;
+
+  const feeGrowthBelow0 = tickCur >= Number(tickLower) ? lowerOut0 : belowSub0;
+  const feeGrowthBelow1 = tickCur >= Number(tickLower) ? lowerOut1 : belowSub1;
+
+  const feeGrowthAbove0 = tickCur < Number(tickUpper) ? upperOut0 : aboveSub0;
+  const feeGrowthAbove1 = tickCur < Number(tickUpper) ? upperOut1 : aboveSub1;
+
+  const feeGrowthInside0X128 = feeGrowthGlobal0X128 - feeGrowthBelow0 - feeGrowthAbove0;
+  const feeGrowthInside1X128 = feeGrowthGlobal1X128 - feeGrowthBelow1 - feeGrowthAbove1;
+
+  const L = toBigIntish(liquidity);
+
+  const last0 = toBigIntish(feeGrowthInside0LastX128);
+  const last1 = toBigIntish(feeGrowthInside1LastX128);
+
+  const owed0Base = toBigIntish(tokensOwed0);
+  const owed1Base = toBigIntish(tokensOwed1);
+
+  const delta0 = feeGrowthInside0X128 > last0 ? (feeGrowthInside0X128 - last0) : 0n;
+  const delta1 = feeGrowthInside1X128 > last1 ? (feeGrowthInside1X128 - last1) : 0n;
+
+  const fees0 = owed0Base + (L * delta0) / Q128;
+  const fees1 = owed1Base + (L * delta1) / Q128;
+
+  return { fee0Raw: fees0.toString(), fee1Raw: fees1.toString() };
+}
+
+// -----------------------------
+// Fees helper: simulate collect() (no state change)
+// -----------------------------
+const MAX_UINT128 = (1n << 128n) - 1n;
+
+/**
+ * Try to compute current uncollected fees by simulating a collect().
+ * Works on Uniswap v3 NonfungiblePositionManager-style contracts.
+ *
+ * Returns: { fee0Raw: string, fee1Raw: string } or null if not supported.
+ */
+async function simulateCollectFees(pm, tokenIdBN, recipientEip55) {
+  // Some ABIs use collect(tuple), others expose collect(...) directly.
+  // Ethers v6: contract.collect.staticCall(...)
+  // Ethers v5: contract.callStatic.collect(...)
+  const params = {
+    tokenId: tokenIdBN,
+    recipient: recipientEip55,
+    amount0Max: MAX_UINT128,
+    amount1Max: MAX_UINT128,
+  };
+
+  try {
+    // v6 style (preferred)
+    if (pm?.collect?.staticCall) {
+      const out = await pm.collect.staticCall(params);
+      const a0 = out?.amount0 ?? out?.[0];
+      const a1 = out?.amount1 ?? out?.[1];
+      if (a0 != null && a1 != null) return { fee0Raw: a0.toString(), fee1Raw: a1.toString() };
+    }
+  } catch (_) {}
+
+  try {
+    // v5 style fallback
+    if (pm?.callStatic?.collect) {
+      const out = await pm.callStatic.collect(params);
+      const a0 = out?.amount0 ?? out?.[0];
+      const a1 = out?.amount1 ?? out?.[1];
+      if (a0 != null && a1 != null) return { fee0Raw: a0.toString(), fee1Raw: a1.toString() };
+    }
+  } catch (_) {}
+
+  // If your ABI doesn't include collect, this will always be null.
+  return null;
+}
+
 // -----------------------------
 // LP range tier classification
 // -----------------------------
 function classifyLpRangeTier(rangeStatus, tickLower, tickUpper, currentTick) {
-  const normStatus = (rangeStatus || "")
-    .toString()
-    .toUpperCase()
-    .replace(/\s+/g, "_");
+  const normStatus = (rangeStatus || "").toString().toUpperCase().replace(/\s+/g, "_");
 
   const width = tickUpper - tickLower;
   const hasTicks =
@@ -99,16 +260,11 @@ function classifyLpRangeTier(rangeStatus, tickLower, tickUpper, currentTick) {
   const outHigh = LP_OUT_HIGH_FRAC;
 
   if (normStatus === "IN_RANGE" && hasTicks) {
-    const positionFrac = (currentTick - tickLower) / width; // 0..1
+    const positionFrac = (currentTick - tickLower) / width;
     const centerDist = Math.min(positionFrac, 1 - positionFrac);
 
     if (!Number.isFinite(centerDist) || centerDist < 0) {
-      return {
-        tier: "UNKNOWN",
-        positionFrac: null,
-        distanceFrac: null,
-        label: "invalid in-range tick geometry",
-      };
+      return { tier: "UNKNOWN", positionFrac: null, distanceFrac: null, label: "invalid in-range tick geometry" };
     }
 
     let tier = "LOW";
@@ -132,12 +288,7 @@ function classifyLpRangeTier(rangeStatus, tickLower, tickUpper, currentTick) {
     else if (currentTick >= tickUpper) distanceFrac = (currentTick - tickUpper) / width;
 
     if (!Number.isFinite(distanceFrac) || distanceFrac < 0) {
-      return {
-        tier: "HIGH",
-        positionFrac: null,
-        distanceFrac: null,
-        label: "out of range (distance unknown)",
-      };
+      return { tier: "HIGH", positionFrac: null, distanceFrac: null, label: "out of range (distance unknown)" };
     }
 
     let tier;
@@ -226,10 +377,9 @@ function extractPrevRangeStatus(prevStateJson) {
     if (!obj || obj.kind !== "LP") return "UNKNOWN";
     const s = obj.rangeStatus ?? obj.status ?? obj.range ?? null;
     const out = (s || "UNKNOWN").toString().toUpperCase();
-    // normalize a few cases we might have stored historically
     if (out === "INACTIVE") return "INACTIVE";
     if (out === "OUT_OF_RANGE" || out === "IN_RANGE" || out === "UNKNOWN") return out;
-    return out; // keep whatever else, but uppercased
+    return out;
   } catch {
     return "UNKNOWN";
   }
@@ -254,19 +404,26 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
   const tickLower = Number(pos.tickLower);
   const tickUpper = Number(pos.tickUpper);
 
+  // raw "owed" fields (often stale / 0)
+  const tokensOwed0Raw = pos.tokensOwed0 != null ? pos.tokensOwed0.toString() : "0";
+  const tokensOwed1Raw = pos.tokensOwed1 != null ? pos.tokensOwed1.toString() : "0";
+
+  // symbols + decimals (best-effort)
   let token0Symbol = token0;
   let token1Symbol = token1;
-  try {
-    token0Symbol = await getTokenSymbol(provider, token0);
-  } catch (_) {}
-  try {
-    token1Symbol = await getTokenSymbol(provider, token1);
-  } catch (_) {}
+  let dec0 = 18;
+  let dec1 = 18;
+
+  try { token0Symbol = await getTokenSymbol(provider, token0); } catch (_) {}
+  try { token1Symbol = await getTokenSymbol(provider, token1); } catch (_) {}
+  try { dec0 = await getTokenDecimals(provider, token0); } catch (_) {}
+  try { dec1 = await getTokenDecimals(provider, token1); } catch (_) {}
 
   const pairLabel = dbPairLabel || `${token0Symbol}-${token1Symbol}`;
 
   let poolAddr = null;
   let currentTick = null;
+  let sqrtPriceX96 = null;
   let rangeStatus = "UNKNOWN";
 
   try {
@@ -278,8 +435,12 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
       if (poolAddr && poolAddr !== ethers.ZeroAddress) {
         const pool = new ethers.Contract(poolAddr, uniswapV3PoolAbi, provider);
         const slot0 = await pool.slot0();
+
         const tick = slot0.tick !== undefined ? slot0.tick : slot0[1];
+        const sp = slot0.sqrtPriceX96 !== undefined ? slot0.sqrtPriceX96 : slot0[0];
+
         currentTick = Number(tick);
+        sqrtPriceX96 = sp ? sp.toString() : null;
 
         if (Number.isFinite(currentTick)) {
           rangeStatus =
@@ -290,6 +451,69 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
   } catch (_) {}
 
   const lpClass = classifyLpRangeTier(rangeStatus, tickLower, tickUpper, currentTick);
+
+  // principal token amounts (best-effort)
+  let amount0 = null;
+  let amount1 = null;
+  if (sqrtPriceX96) {
+    try {
+      const { amount0Raw, amount1Raw } = amountsForPosition({
+        sqrtPriceX96,
+        tickLower,
+        tickUpper,
+        liquidity: liquidity.toString(),
+      });
+      amount0 = Number(ethers.formatUnits(amount0Raw, dec0));
+      amount1 = Number(ethers.formatUnits(amount1Raw, dec1));
+    } catch (_) {}
+  }
+
+  // ✅ fees: prefer simulated collect() (live), fallback to tokensOwed*
+  let fee0Raw = tokensOwed0Raw;
+  let fee1Raw = tokensOwed1Raw;
+
+  let simWorked = false;
+  try {
+    const sim = await simulateCollectFees(pm, tokenIdBN, owner);
+    if (sim?.fee0Raw != null && sim?.fee1Raw != null) {
+      fee0Raw = sim.fee0Raw;
+      fee1Raw = sim.fee1Raw;
+      simWorked = true;
+    }
+  } catch (_) {}
+
+  // If sim gives 0/0 (or doesn’t work) but we have a pool + tick, compute via feeGrowth math
+  try {
+    const bothZero = (fee0Raw === "0" && fee1Raw === "0");
+    if ((bothZero || !simWorked) && poolAddr && Number.isFinite(currentTick)) {
+      const pool = new ethers.Contract(poolAddr, uniswapV3PoolAbi, provider);
+
+      const computed = await computeFeesOwedFromPool({
+        pool,
+        currentTick,
+        tickLower,
+        tickUpper,
+        liquidity: liquidity.toString(),
+        feeGrowthInside0LastX128: pos.feeGrowthInside0LastX128,
+        feeGrowthInside1LastX128: pos.feeGrowthInside1LastX128,
+        tokensOwed0: pos.tokensOwed0,
+        tokensOwed1: pos.tokensOwed1,
+      });
+
+      fee0Raw = computed.fee0Raw;
+      fee1Raw = computed.fee1Raw;
+    }
+  } catch (err) {
+    logger.warn(
+      `[LP][${chainId}] feeGrowth fallback FAILED tokenId=${tokenId}: ${err.shortMessage || err.message}`
+    );
+  }
+
+
+  let fees0 = null;
+  let fees1 = null;
+  try { fees0 = Number(ethers.formatUnits(fee0Raw, dec0)); } catch (_) {}
+  try { fees1 = Number(ethers.formatUnits(fee1Raw, dec1)); } catch (_) {}
 
   return {
     userId,
@@ -316,6 +540,12 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
     status: "ACTIVE",
     rangeStatus,
     poolAddr,
+
+    amount0,
+    amount1,
+
+    fees0,
+    fees1,
 
     lpRangeTier: lpClass.tier,
     lpRangeLabel: lpClass.label,
@@ -371,7 +601,7 @@ async function getLpSummaries() {
 }
 
 // -----------------------------
-// Core LP description (logging + alerts)
+// Core LP description (logging + alerts) - unchanged
 // -----------------------------
 async function describeLpPosition(provider, chainId, protocol, row, options = {}) {
   const { verbose = false } = options;
@@ -477,7 +707,8 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
         currentTick = Number(tick);
 
         if (Number.isFinite(currentTick)) {
-          currentStatus = currentTick >= tickLower && currentTick < tickUpper ? "IN_RANGE" : "OUT_OF_RANGE";
+          currentStatus =
+            currentTick >= tickLower && currentTick < tickUpper ? "IN_RANGE" : "OUT_OF_RANGE";
         }
       }
     }

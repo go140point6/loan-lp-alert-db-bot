@@ -5,12 +5,33 @@ const { getDb, getOrCreateUserId } = require("../db");
 const { prepareQueries } = require("../db/queries");
 const { ensureDmOnboarding } = require("../utils/discord/dm");
 const { ephemeralFlags } = require("../utils/discord/ephemerals");
+const { createDecimalFormatter } = require("../utils/intlNumberFormats");
 const logger = require("../utils/logger");
 
 function chunk(arr, size) {
   const out = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
+}
+
+const fmt4 = createDecimalFormatter(0, 4);
+const fmt5 = createDecimalFormatter(0, 5);
+
+function fmtNum(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "n/a";
+  return fmt4.format(n);
+}
+
+function fmtNum5(n) {
+  if (typeof n !== "number" || !Number.isFinite(n)) return "n/a";
+  return fmt5.format(n);
+}
+
+function shortId(id, head = 4, tail = 4) {
+  if (id == null) return "?";
+  const s = String(id);
+  if (s.length <= head + tail + 1) return s;
+  return `${s.slice(0, head)}…${s.slice(-tail)}`;
 }
 
 module.exports = {
@@ -82,14 +103,14 @@ module.exports = {
         descLines.push("CDP price: *(unknown; CDP price source unavailable)*");
       } else {
         descLines.push(
-          `CDP: **${cdpPrice.toFixed(4)} USD**, redemption state **${cdpState.state}** ` +
-            `(trigger **${Number(cdpState.trigger).toFixed(4)}**, ${cdpState.label}).`
+        `CDP: **${fmtNum(cdpPrice)} USD**, redemption state **${cdpState.state}** ` +
+          `(trigger **${fmtNum(Number(cdpState.trigger))}**, ${cdpState.label}).`
         );
       }
 
       const fields = summaries.map((s) => {
-        // ✅ CHANGE: remove trove id from header (keep protocol+chain only)
-        const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"})`;
+        const rawId = s.troveId ?? s.tokenId ?? s.positionId ?? "?";
+        const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"}) — ${shortId(rawId)}`;
 
         const valueLines = [];
 
@@ -103,17 +124,17 @@ module.exports = {
               : "n/a";
 
           valueLines.push(`LTV: **${ltvText}**`);
-          valueLines.push(`Price / Liq: **${s.price.toFixed(5)} / ${s.liquidationPrice.toFixed(5)}**`);
+          valueLines.push(`Price / Liq: **${fmtNum5(s.price)} / ${fmtNum5(s.liquidationPrice)}**`);
           valueLines.push(`Liq buffer: **${liqBufferText}** (tier **${s.liquidationTier || "UNKNOWN"}**)`);
         } else {
           valueLines.push("Price / liquidation: *(unavailable; cannot compute LTV / buffer)*");
         }
 
         if (typeof s.collAmount === "number") {
-          valueLines.push(`Collateral: **${s.collAmount.toFixed(4)} ${s.collSymbol || ""}**`.trim());
+          valueLines.push(`Collateral: **${fmtNum(s.collAmount)} ${s.collSymbol || ""}**`.trim());
         }
         if (typeof s.debtAmount === "number") {
-          valueLines.push(`Debt: **${s.debtAmount.toFixed(4)}**`);
+          valueLines.push(`Debt: **${fmtNum(s.debtAmount)}**`);
         }
 
         if (typeof s.interestPct === "number") {
