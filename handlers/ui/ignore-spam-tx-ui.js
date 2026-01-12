@@ -9,11 +9,11 @@ const {
   TextInputStyle,
   EmbedBuilder,
 } = require("discord.js");
-const { MessageFlags } = require("discord-api-types/v10");
 
 const logger = require("../../utils/logger");
 const { getDb, getOrCreateUserId } = require("../../db");
 const { prepareQueries } = require("../../db/queries");
+const { ephemeralFlags } = require("../../utils/discord/ephemerals");
 
 // ===================== UI LOCK START =====================
 const IG_LOCK_TTL_MS = 2500;
@@ -60,19 +60,19 @@ async function ackUpdate(i) {
   } catch (_) {}
 }
 
-async function ackModal(i) {
+async function ackModal(i, flags) {
   if (i.deferred || i.replied) return;
   try {
-    await i.deferReply({ flags: MessageFlags.Ephemeral });
+    await i.deferReply({ flags });
   } catch (_) {}
 }
 
-async function replyEphemeralOnce(i, content) {
+async function replyOnce(i, content, flags) {
   try {
     if (i.deferred || i.replied) {
-      await i.followUp({ content, flags: MessageFlags.Ephemeral });
+      await i.followUp({ content, flags });
     } else {
-      await i.reply({ content, flags: MessageFlags.Ephemeral });
+      await i.reply({ content, flags });
     }
   } catch (_) {}
 }
@@ -303,6 +303,9 @@ async function handleIgnoreSpamTxInteraction(interaction) {
   const actorId = interaction.user?.id;
   if (!actorId) return false;
 
+  // Decide ephemeral/public once for this interaction
+  const ephFlags = ephemeralFlags();
+
   const parts = interaction.customId.split(":");
   const ns = parts[0];
   const action = parts[1];
@@ -329,7 +332,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
 
     if (!userId) {
       await ackUpdate(interaction);
-      await replyEphemeralOnce(interaction, "❌ Could not create/load your user record. Try again.");
+      await replyOnce(interaction, "❌ Could not create/load your user record. Try again.", ephFlags);
       return true;
     }
 
@@ -339,19 +342,19 @@ async function handleIgnoreSpamTxInteraction(interaction) {
       const contractId = Number(parts[3]);
       const walletId = Number(parts[4]);
 
-      await ackModal(interaction);
+      await ackModal(interaction, ephFlags);
 
       const positionIdRaw = (interaction.fields.getTextInputValue("positionId") || "").trim();
       const reason = (interaction.fields.getTextInputValue("reason") || "").trim() || null;
 
       if (!positionIdRaw) {
-        await replyEphemeralOnce(interaction, "❌ Position ID is required.");
+        await replyOnce(interaction, "❌ Position ID is required.", ephFlags);
         await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }
 
       if (!Number.isFinite(contractId) || !Number.isFinite(walletId)) {
-        await replyEphemeralOnce(interaction, "❌ Invalid modal state. Please run /ignore-spam-tx again.");
+        await replyOnce(interaction, "❌ Invalid modal state. Please run /ignore-spam-tx again.", ephFlags);
         await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }
@@ -359,7 +362,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
       // Validate contract + derive position_kind
       const contractRow = q.selContractById.get(contractId);
       if (!contractRow) {
-        await replyEphemeralOnce(interaction, "❌ Could not load that contract. Run /ignore-spam-tx again.");
+        await replyOnce(interaction, "❌ Could not load that contract. Run /ignore-spam-tx again.", ephFlags);
         await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }
@@ -368,7 +371,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
         contractRow.kind === "LP_NFT" ? "LP" : contractRow.kind === "LOAN_NFT" ? "LOAN" : null;
 
       if (!positionKind) {
-        await replyEphemeralOnce(interaction, "❌ Unsupported contract type for ignores.");
+        await replyOnce(interaction, "❌ Unsupported contract type for ignores.", ephFlags);
         await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }
@@ -376,13 +379,13 @@ async function handleIgnoreSpamTxInteraction(interaction) {
       // Validate wallet belongs to user + chain matches contract
       const walletRow = q.selUserWalletByIdForUser.get(walletId, userId);
       if (!walletRow) {
-        await replyEphemeralOnce(interaction, "❌ Invalid wallet selection. Please run /ignore-spam-tx again.");
+        await replyOnce(interaction, "❌ Invalid wallet selection. Please run /ignore-spam-tx again.", ephFlags);
         await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }
 
       if (String(walletRow.chain_id).toUpperCase() !== String(contractRow.chain_id).toUpperCase()) {
-        await replyEphemeralOnce(interaction, "❌ Wallet chain does not match contract chain. Please try again.");
+        await replyOnce(interaction, "❌ Wallet chain does not match contract chain. Please try again.", ephFlags);
         await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }
@@ -397,7 +400,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
           reason,
         });
       } catch (err) {
-        await replyEphemeralOnce(interaction, `❌ Could not save ignore: ${err.message}`);
+        await replyOnce(interaction, `❌ Could not save ignore: ${err.message}`, ephFlags);
       }
 
       await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
@@ -448,14 +451,14 @@ async function handleIgnoreSpamTxInteraction(interaction) {
         const contractId = Number(picked);
 
         if (!picked || !Number.isFinite(contractId)) {
-          await replyEphemeralOnce(interaction, "❌ Invalid contract selection.");
+          await replyOnce(interaction, "❌ Invalid contract selection.", ephFlags);
           await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
           return true;
         }
 
         const contractRow = q.selContractById.get(contractId);
         if (!contractRow) {
-          await replyEphemeralOnce(interaction, "❌ Could not load that contract.");
+          await replyOnce(interaction, "❌ Could not load that contract.", ephFlags);
           await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
           return true;
         }
@@ -487,7 +490,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
         const walletId = Number(interaction.values?.[0]);
 
         if (!Number.isFinite(contractId) || !Number.isFinite(walletId)) {
-          await replyEphemeralOnce(interaction, "❌ Invalid selection.");
+          await replyOnce(interaction, "❌ Invalid selection.", ephFlags);
           await ackUpdate(interaction);
           await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
           return true;
@@ -501,7 +504,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
           await interaction.showModal(ignoreModal({ userKey: actorId, contractId, walletId, title }));
         } catch (err) {
           await ackUpdate(interaction);
-          await replyEphemeralOnce(interaction, `❌ Could not open modal: ${err.message}`);
+          await replyOnce(interaction, `❌ Could not open modal: ${err.message}`, ephFlags);
           await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         }
         return true;
@@ -510,7 +513,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
       if (action === "rmselect") {
         const ignoreId = Number(interaction.values?.[0]);
         if (!Number.isFinite(ignoreId)) {
-          await replyEphemeralOnce(interaction, "❌ Invalid selection.");
+          await replyOnce(interaction, "❌ Invalid selection.", ephFlags);
           await interaction.update(renderMain({ actorId, discordName, userId, q })).catch(() => {});
           return true;
         }
@@ -526,7 +529,7 @@ async function handleIgnoreSpamTxInteraction(interaction) {
   } catch (err) {
     logger.error("[ignore-spam-tx-ui] router error:", err);
     await ackUpdate(interaction);
-    await replyEphemeralOnce(interaction, `❌ Error: ${err.message}`);
+    await replyOnce(interaction, `❌ Error: ${err.message}`, ephFlags);
     return true;
   } finally {
     releaseLock(actorId, seq);

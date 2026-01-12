@@ -1,10 +1,9 @@
 // events/onInteraction.js
-const { MessageFlags } = require("discord-api-types/v10");
-
 const logger = require("../utils/logger");
 
 const { handleUiInteractionRouters } = require("../handlers/ui");
 const { safeInteractionErrorReply } = require("../utils/discord/safeInteractionErrorReply");
+const { ephemeralFlags } = require("../utils/discord/ephemerals");
 
 // UI interactions = buttons/selects/modals
 function isUiInteraction(i) {
@@ -29,8 +28,8 @@ async function ackUnhandledUiInteraction(interaction) {
     }
 
     if (interaction.isModalSubmit?.()) {
-      // Prefer flags style (newer discord.js patterns)
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      // Respect global EPHEMERALS_OFF toggle
+      await interaction.deferReply({ flags: ephemeralFlags() });
       // Optional: uncomment if you want user feedback instead of a silent defer
       // await interaction.editReply("⚠️ This action is no longer valid. Please run the command again.");
       return;

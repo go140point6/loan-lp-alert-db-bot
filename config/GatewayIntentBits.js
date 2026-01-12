@@ -8,7 +8,6 @@ const { GatewayIntentBits } = require("discord.js");
 const intents = [
   GatewayIntentBits.Guilds,
   GatewayIntentBits.GuildMessages,
-  GatewayIntentBits.MessageContent,
 ];
 
 module.exports = {

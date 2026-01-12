@@ -11,6 +11,8 @@ const { setAlertEngineClient } = require("../monitoring/alertEngine");
 
 async function onReady(client) {
   logger.startup(`Ready! Logged in as ${client.user.tag}`);
+  const ephOff = process.env.EPHEMERALS_OFF === "1";
+  logger.startup(`Ephemeral replies: ${ephOff ? "DISABLED (testing)" : "ENABLED (production)"}`);
   setAlertEngineClient(client);
 
   // Commands collection (used by onInteraction)

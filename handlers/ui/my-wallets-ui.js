@@ -9,12 +9,12 @@ const {
   TextInputStyle,
   EmbedBuilder,
 } = require("discord.js");
-const { MessageFlags } = require("discord-api-types/v10");
 
 const logger = require("../../utils/logger");
 
 const { getDb, getOrCreateUserId, getOrCreateWalletId } = require("../../db");
 const { prepareQueries } = require("../../db/queries");
+const { ephemeralFlags } = require("../../utils/discord/ephemerals");
 
 // ===================== UI LOCK START =====================
 // One in-flight mw action per user. Everything else is ACKed and ignored.
@@ -160,7 +160,7 @@ function walletModal({ userKey, chainId }) {
 
   const addressInput = new TextInputBuilder()
     .setCustomId("address")
-    .setLabel("Wallet address (0x… or xdc…)") // your getOrCreateWalletId should normalize
+    .setLabel("Wallet address (0x… or xdc…)")
     .setStyle(TextInputStyle.Short)
     .setRequired(true);
 
@@ -239,13 +239,13 @@ async function ackUpdate(i) {
   } catch (_) {}
 }
 
-async function replyEphemeralOnce(i, content) {
+async function replyOnce(i, content, flags) {
   // Used only for real errors; avoid spamming confirmations
   try {
     if (i.deferred || i.replied) {
-      await i.followUp({ content, flags: MessageFlags.Ephemeral });
+      await i.followUp({ content, flags });
     } else {
-      await i.reply({ content, flags: MessageFlags.Ephemeral });
+      await i.reply({ content, flags });
     }
   } catch (_) {}
 }
@@ -265,6 +265,9 @@ async function handleMyWalletsInteraction(interaction) {
 
   const actorId = interaction.user?.id;
   if (!actorId) return false;
+
+  // Decide ephemeral/public once for this interaction
+  const ephFlags = ephemeralFlags();
 
   // Parse early
   const parts = interaction.customId.split(":");
@@ -296,7 +299,7 @@ async function handleMyWalletsInteraction(interaction) {
     const userId = getOrCreateUserId(db, { discordId: actorId, discordName });
     if (!userId) {
       await ackUpdate(interaction);
-      await replyEphemeralOnce(interaction, "❌ Could not create/load your user record. Try /my-wallets again.");
+      await replyOnce(interaction, "❌ Could not create/load your user record. Try /my-wallets again.", ephFlags);
       return true;
     }
 
@@ -306,7 +309,7 @@ async function handleMyWalletsInteraction(interaction) {
 
       // ACK the modal submit
       if (!interaction.deferred && !interaction.replied) {
-        await interaction.deferReply({ flags: MessageFlags.Ephemeral }).catch(() => {});
+        await interaction.deferReply({ flags: ephFlags }).catch(() => {});
       }
 
       const addressInput = interaction.fields.getTextInputValue("address");
@@ -360,7 +363,7 @@ async function handleMyWalletsInteraction(interaction) {
           await interaction.showModal(walletModal({ userKey: actorId, chainId }));
         } catch (err) {
           await ackUpdate(interaction);
-          await replyEphemeralOnce(interaction, `❌ Could not open the modal: ${err.message}`);
+          await replyOnce(interaction, `❌ Could not open the modal: ${err.message}`, ephFlags);
           await interaction.editReply(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         }
         return true;
@@ -372,7 +375,7 @@ async function handleMyWalletsInteraction(interaction) {
 
         if (!Number.isFinite(walletId)) {
           await interaction.update(renderMain({ actorId, discordName, userId, q })).catch(() => {});
-          await replyEphemeralOnce(interaction, "❌ Invalid wallet selection.");
+          await replyOnce(interaction, "❌ Invalid wallet selection.", ephFlags);
           return true;
         }
 
@@ -387,7 +390,7 @@ async function handleMyWalletsInteraction(interaction) {
   } catch (err) {
     logger.error("[my-wallets-ui] router error:", err);
     await ackUpdate(interaction);
-    await replyEphemeralOnce(interaction, `❌ Error: ${err.message}`);
+    await replyOnce(interaction, `❌ Error: ${err.message}`, ephFlags);
     return true;
   } finally {
     releaseLock(actorId, seq);

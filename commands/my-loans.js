@@ -1,10 +1,10 @@
 // commands/my-loans.js
 const { SlashCommandBuilder, EmbedBuilder } = require("discord.js");
-const { MessageFlags } = require("discord-api-types/v10");
 
 const { getDb, getOrCreateUserId } = require("../db");
 const { prepareQueries } = require("../db/queries");
 const { ensureDmOnboarding } = require("../utils/discord/dm");
+const { ephemeralFlags } = require("../utils/discord/ephemerals");
 const logger = require("../utils/logger");
 
 function chunk(arr, size) {
@@ -19,9 +19,12 @@ module.exports = {
     .setDescription("Show current monitored loan positions."),
 
   async execute(interaction) {
+    // Decide ephemeral/public ONCE at the start (locked on first response)
+    const ephFlags = ephemeralFlags();
+
     try {
-      // Always ephemeral
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      // Ephemeral in prod, public in testing when EPHEMERALS_OFF=1
+      await interaction.deferReply({ flags: ephFlags });
 
       const db = getDb();
       const q = prepareQueries(db);
@@ -161,7 +164,7 @@ module.exports = {
         } else {
           await interaction.reply({
             content: "An error occurred while processing `/my-loans`.",
-            flags: MessageFlags.Ephemeral,
+            flags: ephFlags,
           });
         }
       } catch (_) {}

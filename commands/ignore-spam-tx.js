@@ -1,12 +1,12 @@
 // commands/ignore-spam-tx.js
 const { SlashCommandBuilder } = require("discord.js");
-const { MessageFlags } = require("discord-api-types/v10");
 
 const logger = require("../utils/logger");
 
 const { getDb, getOrCreateUserId } = require("../db");
 const { prepareQueries } = require("../db/queries");
 const { ensureDmOnboarding } = require("../utils/discord/dm");
+const { ephemeralFlags } = require("../utils/discord/ephemerals");
 
 // UI entrypoint
 const { renderMain } = require("../handlers/ui/ignore-spam-tx-ui");
@@ -17,9 +17,12 @@ module.exports = {
     .setDescription("Ignore a scam/spam NFT position by ID (LP tokenId or Loan troveId)."),
 
   async execute(interaction) {
+    // Decide ephemeral/public ONCE (locked on first response)
+    const ephFlags = ephemeralFlags();
+
     try {
-      // Always ephemeral
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      // Ephemeral in prod, public in testing when EPHEMERALS_OFF=1
+      await interaction.deferReply({ flags: ephFlags });
 
       const db = getDb();
       const q = prepareQueries(db);
@@ -59,7 +62,7 @@ module.exports = {
         } else {
           await interaction.reply({
             content: "An error occurred while processing `/ignore-spam-tx`.",
-            flags: MessageFlags.Ephemeral,
+            flags: ephFlags,
           });
         }
       } catch (_) {}

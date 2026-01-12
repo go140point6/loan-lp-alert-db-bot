@@ -1,6 +1,6 @@
 // utils/discord/dm.js
-const { MessageFlags } = require("discord-api-types/v10");
 const logger = require("../logger");
+const { ephemeralFlags } = require("./ephemerals");
 
 /**
  * DM policy (no probe):
@@ -47,12 +47,12 @@ async function ensureDmOnboarding({
       error: err?.message || String(err),
     });
 
-    // Ephemeral warning in the interaction UI
+    // Ephemeral warning in the interaction UI (toggleable via EPHEMERALS_OFF)
     try {
       await interaction.followUp({
         content:
           "⚠️ I wasn't able to send you a DM. Enable DMs from server members in **User Settings → Privacy & Safety** if you'd like alerts.",
-        flags: MessageFlags.Ephemeral,
+        flags: ephemeralFlags(),
       });
     } catch (_) {
       // Best-effort: UI feedback failure is non-fatal
