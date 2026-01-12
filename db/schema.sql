@@ -368,6 +368,18 @@ CREATE INDEX idx_alert_log_position
   ON alert_log(wallet_id, contract_id, token_id);
 
 -- =========================================================
+-- TEST OVERRIDES
+-- =========================================================
+CREATE TABLE IF NOT EXISTS test_overrides (
+  kind        TEXT NOT NULL,              -- 'LP' | 'LIQ' | 'REDEMP'
+  contract_id INTEGER NOT NULL,
+  token_id    TEXT NOT NULL,
+  value_text  TEXT NOT NULL,              -- JSON payload
+  fetched_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (kind, contract_id, token_id)
+);
+
+-- =========================================================
 -- UPDATED_AT TRIGGERS
 -- =========================================================
 CREATE TRIGGER trg_contracts_updated_at

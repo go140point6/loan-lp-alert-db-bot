@@ -12,12 +12,13 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const Database = require("better-sqlite3");
-const logger = require("../utils/logger");
 
 require("dotenv").config({
   path: path.join(__dirname, "..", ".env"),
   quiet: true,
 });
+
+const logger = require("../utils/logger");
 
 // Strict: require MONITOR_DB_PATH (env only)
 function requireEnv(name) {

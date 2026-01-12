@@ -14,10 +14,8 @@ https://flare-mainnet.gateway.tatum.io
 ```
 https://rpc.ankr.com/xdc
 https://rpc.xdc.org
-https://erpc.xinfin.network
 https://rpc1.xinfin.network
 https://rpc.xinfin.network
 https://earpc.xinfin.network
 https://erpc.xdcrpc.com
 ```
-

@@ -126,7 +126,75 @@ async function getOraclePrice(priceFeedContract) {
 }
 
 // -----------------------------
-// Global IR (FIXED: case-insensitive branch lookup + numeric-string tolerant)
+// TEST OVERRIDES (Option A)
+// Stored in global_params with chain_id='*' and keys:
+//   TEST_OVERRIDE:LIQ:<contractId>:<tokenId>
+//   TEST_OVERRIDE:REDEMP:<contractId>:<tokenId>
+// value_text JSON:
+//   { "untilMs": <epoch ms>, "active": true|false, "tier": "HIGH", "status": "...optional..." }
+// -----------------------------
+function getTestOverride(kind, contractId, tokenId) {
+  const k = String(kind || "").toUpperCase();
+  if (!["LIQ", "REDEMP"].includes(k)) return null;
+
+  const cid = String(contractId);
+  const tid = String(tokenId);
+
+  const db = getDb();
+  const key = `TEST_OVERRIDE:${k}:${cid}:${tid}`;
+
+  const row = db
+    .prepare(
+      `
+      SELECT value_text AS valueText
+      FROM global_params
+      WHERE chain_id='*'
+        AND param_key = ?
+      LIMIT 1
+    `
+    )
+    .get(key);
+
+  if (!row || !row.valueText) return null;
+
+  let obj;
+  try {
+    obj = JSON.parse(row.valueText);
+  } catch (e) {
+    logger.warn(`[loanMonitor] Test override key=${key} has invalid JSON; ignoring.`);
+    return null;
+  }
+
+  const untilMs = Number(obj?.untilMs);
+  if (!Number.isFinite(untilMs) || untilMs <= 0) {
+    logger.warn(`[loanMonitor] Test override key=${key} missing/invalid untilMs; ignoring.`);
+    return null;
+  }
+
+  const now = Date.now();
+  if (now > untilMs) {
+    // Expired: best-effort cleanup
+    try {
+      db.prepare(`DELETE FROM global_params WHERE chain_id='*' AND param_key=?`).run(key);
+      logger.debug(`[loanMonitor] Test override expired and removed: ${key}`);
+    } catch (_) {}
+    return null;
+  }
+
+  // Normalize fields
+  const out = {
+    key,
+    untilMs,
+    active: obj?.active === undefined ? undefined : Boolean(obj.active),
+    tier: obj?.tier ? String(obj.tier).toUpperCase() : undefined,
+  };
+
+  logger.debug(`[loanMonitor] Test override applied: ${key} -> ${JSON.stringify(out)}`);
+  return out;
+}
+
+// -----------------------------
+// Global IR (FIXED: numeric-string tolerant + cache)
 // -----------------------------
 function fetchJsonHttps(url) {
   return new Promise((resolve, reject) => {
@@ -161,23 +229,9 @@ function toFiniteNumber(v) {
   return null;
 }
 
-function getBranchObjCaseInsensitive(branchObj, desiredKey) {
-  if (!branchObj || typeof branchObj !== "object") return null;
-  const want = String(desiredKey || "").trim().toUpperCase();
-  if (!want) return null;
-
-  // Exact first
-  if (branchObj[desiredKey] != null) return branchObj[desiredKey];
-
-  // Case-insensitive match
-  const keys = Object.keys(branchObj);
-  const hit = keys.find((k) => String(k).toUpperCase() === want);
-  return hit ? branchObj[hit] : null;
-}
-
 /**
  * Returns map of { BRANCHKEY: pctNumber } where pctNumber is percent points (e.g., 6.03)
- * - Logs HTTP/JSON failures (previously silent in some branches)
+ * - Logs HTTP/JSON failures
  * - Keeps a short in-memory cache so transient fetch issues don't null out alerts
  */
 let _globalIrCache = { atMs: 0, map: null };
@@ -188,7 +242,6 @@ async function fetchGlobalIrPctMap() {
     throw new Error("Global fetch() is not available (need Node 18+ or a fetch polyfill).");
   }
 
-  // Cache hit
   const now = Date.now();
   if (_globalIrCache.map && now - _globalIrCache.atMs < GLOBAL_IR_TTL_MS) {
     logger.debug(`[loanMonitor] Global IR map cache hit: ${JSON.stringify(_globalIrCache.map)}`);
@@ -226,19 +279,15 @@ async function fetchGlobalIrPctMap() {
   const out = {};
   for (const k of GLOBAL_IR_BRANCHES) {
     const raw = json?.branch?.[k]?.interest_rate_avg;
-
-    // interest_rate_avg may be a string like "0.0618..."
     const n = typeof raw === "number" ? raw : Number(raw);
-    if (Number.isFinite(n)) out[String(k).toUpperCase()] = n * 100.0; // fraction -> pct points
+    if (Number.isFinite(n)) out[String(k).toUpperCase()] = n * 100.0;
   }
 
   logger.debug(
     `[loanMonitor] Global IR map fetched: ${Object.keys(out).length ? JSON.stringify(out) : "(empty)"}`
   );
 
-  // Update cache even if empty (prevents refetch-spam); TTL is short anyway.
   _globalIrCache = { atMs: Date.now(), map: out };
-
   return out;
 }
 
@@ -324,13 +373,10 @@ async function getCdpPriceFromPool(provider) {
 
   let priceCdpUsd = null;
 
-  // Same v1 rule: detect CDP by symbol includes "CDP"
   if (sym0U.includes("CDP")) {
-    // token0 is CDP => token1 per CDP (assumed USD-like)
     priceCdpUsd = price1Over0;
   } else if (sym1U.includes("CDP")) {
     if (price1Over0 === 0) throw new Error("price1Over0 is zero; cannot invert");
-    // token1 is CDP => token0 per CDP
     priceCdpUsd = 1 / price1Over0;
   } else {
     throw new Error(`Could not identify CDP token by symbol (token0=${sym0}, token1=${sym1})`);
@@ -343,11 +389,6 @@ async function getCdpPriceFromPool(provider) {
   return priceCdpUsd;
 }
 
-/**
- * v1-compatible: allow calling getCdpPrice() with no args from slash commands.
- * - If ENV mode: ignores provider
- * - If POOL mode: will create an FLR provider if not provided
- */
 async function getCdpPrice(providerFLR = null) {
   if (CDP_PRICE_MODE === "ENV") return getCdpPriceFromEnv();
 
@@ -355,9 +396,6 @@ async function getCdpPrice(providerFLR = null) {
   return getCdpPriceFromPool(provider);
 }
 
-/**
- * v1-compatible return shape: includes .label used by /my-loans
- */
 function classifyCdpRedemptionState(cdpPrice) {
   const trigger = CDP_REDEMPTION_TRIGGER;
 
@@ -480,7 +518,6 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
 
     status: statusStr,
 
-    // pricing fields (populated if price available)
     priceSource: null,
     hasPrice: false,
     price: null,
@@ -493,7 +530,6 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
     icr: null,
   };
 
-  // Oracle price (best-effort like v1)
   const priceFeedAddr = await troveManager.priceFeed();
   const priceFeed = new ethers.Contract(priceFeedAddr, priceFeedAbi, provider);
   const { rawPrice, source } = await getOraclePrice(priceFeed);
@@ -580,8 +616,19 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
 
   const liqClass = classifyLiquidationRisk(bufferFrac);
 
+  // -----------------------------
+  // ✅ Apply TEST overrides (LIQ / REDEMP) at the LAST moment (alerts only)
+  // -----------------------------
+  const liqOverride = getTestOverride("LIQ", contractId, troveId);
+  const redOverride = getTestOverride("REDEMP", contractId, troveId);
+
   // Liquidation alert (DB-stable identity)
-  const liqAlertActive = isTierAtLeast(liqClass.tier, LIQ_ALERT_MIN_TIER, LIQ_TIER_ORDER);
+  const liqTierFinal = liqOverride?.tier || liqClass.tier;
+  const liqIsActiveFinal =
+    typeof liqOverride?.active === "boolean"
+      ? liqOverride.active
+      : isTierAtLeast(liqTierFinal, LIQ_ALERT_MIN_TIER, LIQ_TIER_ORDER);
+
   await handleLiquidationAlert({
     userId,
     walletId,
@@ -591,8 +638,8 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
     protocol,
     wallet: owner,
 
-    isActive: liqAlertActive,
-    tier: liqClass.tier,
+    isActive: liqIsActiveFinal,
+    tier: liqTierFinal,
     ltvPct,
     liquidationPrice,
     currentPrice: priceNorm,
@@ -600,10 +647,15 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
     status: statusStr,
   });
 
-  // Redemption alert requires CDP active
+  // Redemption alert requires CDP active (unless override forces active)
   const cdpIsActive = cdpState && cdpState.state === "ACTIVE";
-  const redAlertActive =
-    cdpIsActive && isTierAtLeast(redClass.tier, REDEMP_ALERT_MIN_TIER, REDEMP_TIER_ORDER);
+
+  const redTierFinal = redOverride?.tier || redClass.tier;
+  const redGatedActive =
+    cdpIsActive && isTierAtLeast(redTierFinal, REDEMP_ALERT_MIN_TIER, REDEMP_TIER_ORDER);
+
+  const redIsActiveFinal =
+    typeof redOverride?.active === "boolean" ? redOverride.active : redGatedActive;
 
   await handleRedemptionAlert({
     userId,
@@ -614,8 +666,8 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
     protocol,
     wallet: owner,
 
-    isActive: redAlertActive,
-    tier: redClass.tier,
+    isActive: redIsActiveFinal,
+    tier: redTierFinal,
     cdpIR: interestPct,
     globalIR: globalIrPct,
     isCDPActive: cdpIsActive,
@@ -632,11 +684,9 @@ async function monitorLoans() {
 
   const globalIrMap = await fetchGlobalIrPctMap();
 
-  // Cache providers per chain
   const providers = {};
   const getP = (chainId) => (providers[chainId] ||= getProviderForChain(chainId, CHAINS_CONFIG));
 
-  // Compute CDP state once per run (FLR only)
   let cdpState = {
     state: "UNKNOWN",
     trigger: CDP_REDEMPTION_TRIGGER,
@@ -652,7 +702,6 @@ async function monitorLoans() {
     logger.warn(`[loanMonitor] CDP price/state unavailable: ${e?.message || e}`);
   }
 
-  // group by chain
   const byChain = new Map();
   for (const r of rows) {
     const cid = String(r.chainId || "").toUpperCase();
@@ -700,7 +749,6 @@ async function getLoanSummaries() {
   const rows = getMonitoredLoanRows();
   if (!rows.length) return summaries;
 
-  // group by chain
   const byChain = new Map();
   for (const r of rows) {
     const cid = String(r.chainId || "").toUpperCase();
@@ -733,7 +781,6 @@ async function getLoanSummaries() {
   return summaries;
 }
 
-// Keep exports compatible with v1/v2 callers that rely on these helpers
 module.exports = {
   monitorLoans,
   getLoanSummaries,
