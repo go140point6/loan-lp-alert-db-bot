@@ -1,111 +1,62 @@
-# discordjs-v14-bot-template
+# Liquidity Sentinel
 
-A clean, minimal **Discord.js v14 bot template** built for rapid iteration and reuse across multiple bots.
+Liquidity Sentinel is a Discord bot that tracks DeFi positions (loans/troves and Uniswap v3 LPs), evaluates risk, and delivers actionable alerts and daily summaries.
 
-This template focuses on:
-- Clear project structure
-- Safe startup and error handling
-- Environment-variable driven configuration
-- Consistent, controllable logging
-- Slash-command–first design (Discord.js v14)
+Key focus:
+- fast, readable position snapshots
+- risk-tiered alerts that stay out of your way
+- daily summaries to keep you oriented
 
----
-
-## What this template provides
-
-- Discord.js v14 client setup
-- Slash command loading and registration (guild-scoped for fast iteration)
-- Centralized environment validation
-- Structured event handlers (`onReady`, `onInteraction`, `onMessage`)
-- A tiny custom logger with:
-  - log levels
-  - always-visible startup messages
-  - optional colored output
-- Example commands and scheduled task logic for reference
+<img src="img/ls-bot.png" alt="Bot photo placeholder" width="600">
 
 ---
 
-## Requirements
+## Features at a glance
 
-- **Node.js 18+**
-- A Discord application and bot token
+### /my-loans
+Loan/trove health, liquidation buffers, and redemption risk across supported chains with clear tiered status.
 
-This project includes a `.nvmrc` file. If you use nvm, run:
+<img src="img/my-loans.png" alt="/my-loans screenshot placeholder" width="720">
 
-```bash
-nvm use
-```
+### /my-lp
+Uniswap v3 LP positions with range status, estimated amounts from liquidity, and fee/position context.
 
-Set the .nvmrc file to your major Node version (i.e. 24, 22, 20, or minimum 18).
-Tested on Node 20 and 24, .nvmrc is currently set to 24.
+<img src="img/my-lp.png" alt="/my-lp screenshot placeholder" width="720">
 
----
+### /my-wallets
+Tracked wallets and linked positions, built for a quick coverage check.
 
-## Installation
+<img src="img/my-wallets.png" alt="/my-wallets screenshot placeholder" width="720">
 
-Clone the repository and install dependencies:
+### /ignore-spam-tx
+Ignore noisy or irrelevant on-chain transactions to keep alerts focused on what matters.
 
-```bash
-npm install
-```
-
-Create your environment file:
-
-```bash
-cp .env-template .env
-```
-
-Fill in the required values in `.env`.
-
-Start the bot (to test):
-
-```bash
-node start
-```
-
-For development, you can also run:
-
-```bash
-DEBUG=2 npm run dev
-```
-
-RECOMMENDED: Use pm2 or other process manager for production.
+<img src="img/ignore-spam-tx.png" alt="/ignore-spam-tx screenshot placeholder" width="720">
 
 ---
 
-## Environment configuration
+## Monitoring & alerts
 
-All required configuration is provided via environment variables.
+### Alert engine
+Stateful alerting for liquidation/redemption thresholds and position risk changes with deduped notifications and tiered severity.
 
-At minimum, you must set:
-- `BOT_TOKEN`
-- `CLIENT_ID`
-- `GUILD_ID`
+<img src="img/alert.png" alt="Alert engine screenshot placeholder" width="720">
 
-Optional variables control logging verbosity and example schedulers.
+### Daily heartbeat DM
+A daily summary DM with tracked positions, current status, and key liquidity/health signals.
 
-See `.env-template` for the full list.
+<img src="img/daily-heartbeat.png" alt="Daily heartbeat screenshot placeholder" width="720">
 
 ---
 
-## Logging
+## Other highlights
 
-This template uses a **custom lightweight logger** instead of raw `console.*`.
-
-Features include:
-- Log levels (`STARTUP`, `ERROR`, `WARN`, `INFO`, `DEBUG`)
-- Always-visible startup confirmation
-- Optional ANSI color output
-- Single-point verbosity control via `.env`
-
-Full documentation:
-```
-./docs/LOGGER.md
-```
+- Scheduled scanning so positions stay fresh in near-realtime.
+- Multi-chain RPC support with strict environment validation.
+- Lightweight custom logger for consistent, controllable output.
 
 ---
 
 ## License
 
 MIT
-
