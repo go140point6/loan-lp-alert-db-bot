@@ -71,8 +71,7 @@ module.exports = {
       // Recommended approach: use summaries (no alert side-effects)
       const { getLoanSummaries, getCdpPrice, classifyCdpRedemptionState } = require("../monitoring/loanMonitor");
 
-      let summaries = await getLoanSummaries();
-      summaries = (summaries || []).filter((s) => String(s.userId) === String(userId));
+      const summaries = await getLoanSummaries(userId);
 
       if (!summaries.length) {
         await interaction.editReply("No loan positions are currently being monitored for you.");

@@ -416,7 +416,7 @@ function classifyCdpRedemptionState(cdpPrice) {
 // -----------------------------
 // DB rows (v2 schema)
 // -----------------------------
-function getMonitoredLoanRows() {
+function getMonitoredLoanRows(userId = null) {
   const db = getDb();
   return db
     .prepare(
@@ -449,11 +449,12 @@ function getMonitoredLoanRows() {
      AND (pi.token_id IS NULL OR pi.token_id = nt.token_id)
     WHERE
       uw.is_enabled = 1
+      AND (? IS NULL OR u.id = ?)
       AND pi.id IS NULL
     ORDER BY c.chain_id, c.protocol, uw.address_eip55, nt.token_id
   `
     )
-    .all();
+    .all(userId, userId);
 }
 
 // -----------------------------
@@ -736,9 +737,10 @@ async function monitorLoans() {
 // -----------------------------
 // Public API: getLoanSummaries (needed by /my-loans)
 // -----------------------------
-async function getLoanSummaries() {
+async function getLoanSummaries(userId = null) {
   const summaries = [];
 
+  // userId limits the work to one user's positions (full scan when null)
   let globalIrMap = null;
   try {
     globalIrMap = await fetchGlobalIrPctMap();
@@ -746,7 +748,7 @@ async function getLoanSummaries() {
     logger.warn(`[loanMonitor] Global IR unavailable for summaries: ${e?.message || e}`);
   }
 
-  const rows = getMonitoredLoanRows();
+  const rows = getMonitoredLoanRows(userId);
   if (!rows.length) return summaries;
 
   const byChain = new Map();

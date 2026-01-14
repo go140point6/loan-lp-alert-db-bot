@@ -55,8 +55,7 @@ module.exports = {
 
       const { getLpSummaries } = require("../monitoring/lpMonitor");
 
-      let summaries = await getLpSummaries();
-      summaries = (summaries || []).filter((s) => String(s.userId) === String(userId));
+      const summaries = await getLpSummaries(userId);
 
       if (!summaries.length) {
         await interaction.editReply("No LP positions are currently being monitored for you.");

@@ -317,7 +317,7 @@ function classifyLpRangeTier(rangeStatus, tickLower, tickUpper, currentTick) {
 // -----------------------------
 // DB: fetch monitored LP rows (NEW SCHEMA)
 // -----------------------------
-function getMonitoredLpRows() {
+function getMonitoredLpRows(userId = null) {
   const db = getDb();
 
   const sql = `
@@ -363,11 +363,12 @@ function getMonitoredLpRows() {
     WHERE
       uw.is_enabled = 1
       AND c.is_enabled = 1
+      AND (? IS NULL OR u.id = ?)
       AND pi.id IS NULL
     ORDER BY c.chain_id, c.protocol, uw.address_eip55, nt.token_id
   `;
 
-  return db.prepare(sql).all();
+  return db.prepare(sql).all(userId, userId);
 }
 
 function extractPrevRangeStatus(prevStateJson) {
@@ -557,10 +558,11 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
 // -----------------------------
 // Public API: getLpSummaries
 // -----------------------------
-async function getLpSummaries() {
+async function getLpSummaries(userId = null) {
   const summaries = [];
 
-  const rows = getMonitoredLpRows();
+  // userId limits the work to one user's positions (full scan when null)
+  const rows = getMonitoredLpRows(userId);
   if (!rows || rows.length === 0) return summaries;
 
   const byChain = new Map();
