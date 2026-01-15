@@ -11,6 +11,8 @@ const logger = require("../../utils/logger");
  */
 async function loadCommands(client) {
   const commands = [];
+  const botEnv = (process.env.BOT_ENV || "development").toLowerCase();
+  const isProd = botEnv === "production";
 
   const commandsPath = path.join(__dirname, "..", "..", "commands");
   const commandFiles = fs
@@ -20,6 +22,11 @@ async function loadCommands(client) {
   for (const file of commandFiles) {
     const filePath = path.join(commandsPath, file);
     const command = require(filePath);
+
+    if (isProd && command.devOnly) {
+      logger.info(`[loadCommands] Skipping dev-only command in production: ${command.data?.name || file}`);
+      continue;
+    }
 
     if ("data" in command && "execute" in command) {
       client.commands.set(command.data.name, command);

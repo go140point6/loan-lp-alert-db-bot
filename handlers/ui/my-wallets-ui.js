@@ -15,6 +15,7 @@ const logger = require("../../utils/logger");
 const { getDb, getOrCreateUserId, getOrCreateWalletId } = require("../../db");
 const { prepareQueries } = require("../../db/queries");
 const { ephemeralFlags } = require("../../utils/discord/ephemerals");
+const { shortenAddress } = require("../../utils/ethers/shortenAddress");
 
 // ===================== UI LOCK START =====================
 // One in-flight mw action per user. Everything else is ACKed and ignored.
@@ -44,12 +45,6 @@ function releaseLock(actorId, seq) {
 // ====================== UI LOCK END ======================
 
 // ---------------- UI helpers ----------------
-
-function shortAddr(addr) {
-  if (!addr) return "";
-  const s = String(addr);
-  return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-6)}` : s;
-}
 
 function buildWalletsEmbed({ discordName, wallets }) {
   const embed = new EmbedBuilder()
@@ -81,7 +76,7 @@ function buildWalletsEmbed({ discordName, wallets }) {
   for (const [chain, list] of byChain.entries()) {
     const lines = list.map((w) => {
       const label = w.label ? `**${w.label}** ` : "";
-      return `• ${label}\`${shortAddr(w.address_eip55)}\``;
+      return `• ${label}\`${shortenAddress(w.address_eip55)}\``;
     });
     embed.addFields({ name: chain, value: lines.join("\n"), inline: false });
   }
@@ -139,7 +134,7 @@ function removeSelectRow({ userKey, wallets }) {
 
   const options = enabled.slice(0, 25).map((w) => ({
     label: `${w.chain_id} ${w.label ? `— ${w.label}` : ""}`.trim(),
-    description: shortAddr(w.address_eip55),
+    description: shortenAddress(w.address_eip55),
     value: String(w.id),
   }));
 

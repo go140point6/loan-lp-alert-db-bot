@@ -24,6 +24,7 @@ const { TickMath, SqrtPriceMath } = require("@uniswap/v3-sdk");
 const { getDb } = require("../db");
 const { getProviderForChain } = require("../utils/ethers/providers");
 const { handleLpRangeAlert } = require("./alertEngine");
+const { applyLpTickShift, logRunApplied } = require("./testOffsets");
 const logger = require("../utils/logger");
 
 // -----------------------------
@@ -85,6 +86,18 @@ function amountsForPosition({ sqrtPriceX96, tickLower, tickUpper, liquidity }) {
   }
 
   return { amount0Raw: amount0.toString(), amount1Raw: amount1.toString() };
+}
+
+function formatBandRuler(positionFrac, width = 20) {
+  if (typeof positionFrac !== "number" || !Number.isFinite(positionFrac)) {
+    return "0% |--------------------| 100%";
+  }
+  const clamped = Math.max(0, Math.min(1, positionFrac));
+  const steps = Math.max(6, Math.floor(width));
+  const idx = Math.round(clamped * (steps - 1));
+  let bar = "";
+  for (let i = 0; i < steps; i++) bar += i === idx ? "o" : "-";
+  return `0% |${bar}| 100%`;
 }
 
 // -----------------------------
@@ -330,6 +343,7 @@ function getMonitoredLpRows(userId = null) {
       c.protocol           AS protocol,
 
       uw.address_eip55     AS owner,
+      uw.label            AS walletLabel,
       c.address_eip55      AS contract,
 
       nt.token_id          AS tokenId,
@@ -354,6 +368,7 @@ function getMonitoredLpRows(userId = null) {
      AND ast.wallet_id   = uw.id
      AND ast.contract_id = c.id
      AND ast.token_id    = nt.token_id
+     AND ast.alert_type  = 'LP_RANGE'
     LEFT JOIN position_ignores pi
       ON pi.user_id        = u.id
      AND pi.position_kind  = 'LP'
@@ -390,7 +405,16 @@ function extractPrevRangeStatus(prevStateJson) {
 // LP summary builder (no logging)
 // -----------------------------
 async function summarizeLpPosition(provider, chainId, protocol, row) {
-  const { userId, walletId, contractId, contract, owner, tokenId, pairLabel: dbPairLabel } = row;
+  const {
+    userId,
+    walletId,
+    contractId,
+    contract,
+    owner,
+    tokenId,
+    pairLabel: dbPairLabel,
+    walletLabel,
+  } = row;
   const tokenIdBN = BigInt(tokenId);
 
   const pm = new ethers.Contract(contract, positionManagerAbi, provider);
@@ -444,6 +468,7 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
         sqrtPriceX96 = sp ? sp.toString() : null;
 
         if (Number.isFinite(currentTick)) {
+          currentTick = applyLpTickShift(currentTick, tickLower, tickUpper);
           rangeStatus =
             currentTick >= tickLower && currentTick < tickUpper ? "IN_RANGE" : "OUT_OF_RANGE";
         }
@@ -524,6 +549,7 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
     protocol,
     chainId,
     owner,
+    walletLabel,
     tokenId,
     nftContract: contract,
 
@@ -617,6 +643,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
     tokenId,
     pairLabel: dbPairLabel,
     prevStateJson,
+    walletLabel,
   } = row;
   const prevStatus = extractPrevRangeStatus(prevStateJson);
 
@@ -646,6 +673,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
       currentTick: null,
       protocol,
       wallet: owner,
+      walletLabel,
     });
     return;
   }
@@ -709,6 +737,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
         currentTick = Number(tick);
 
         if (Number.isFinite(currentTick)) {
+          currentTick = applyLpTickShift(currentTick, tickLower, tickUpper);
           currentStatus =
             currentTick >= tickLower && currentTick < tickUpper ? "IN_RANGE" : "OUT_OF_RANGE";
         }
@@ -739,6 +768,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
     currentTick,
     protocol,
     wallet: owner,
+    walletLabel,
   });
 
   if (verbose) {
@@ -815,9 +845,12 @@ async function monitorLPs(options = {}) {
       }
     }
   }
+
+  logRunApplied();
 }
 
 module.exports = {
   monitorLPs,
   getLpSummaries,
+  formatBandRuler,
 };

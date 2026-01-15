@@ -14,6 +14,7 @@ function chunk(arr, size) {
 }
 
 const { createDecimalFormatter } = require("../utils/intlNumberFormats");
+const { formatBandRuler } = require("../monitoring/lpMonitor");
 
 // 4 decimals, thousands separators
 const fmt4 = createDecimalFormatter(0, 4);
@@ -125,12 +126,7 @@ module.exports = {
           valueLines.push(
             `Position in band: **${(s.lpPositionFrac * 100).toFixed(2)}%** from lower bound`
           );
-        }
-
-        if (typeof s.tickLower === "number" && typeof s.tickUpper === "number") {
-          const parts = [`Tick range: **[${s.tickLower}, ${s.tickUpper})**`];
-          if (typeof s.currentTick === "number") parts.push(`current: **${s.currentTick}**`);
-          valueLines.push(parts.join(" "));
+          valueLines.push(formatBandRuler(s.lpPositionFrac));
         }
 
         valueLines.push(`Status: **${s.status || "UNKNOWN"}**, Range: **${s.rangeStatus || "UNKNOWN"}**`);

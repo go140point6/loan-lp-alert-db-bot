@@ -14,6 +14,7 @@ const logger = require("../../utils/logger");
 const { getDb, getOrCreateUserId } = require("../../db");
 const { prepareQueries } = require("../../db/queries");
 const { ephemeralFlags } = require("../../utils/discord/ephemerals");
+const { shortenAddress } = require("../../utils/ethers/shortenAddress");
 
 // ===================== UI LOCK START =====================
 const IG_LOCK_TTL_MS = 2500;
@@ -40,12 +41,6 @@ function releaseLock(actorId, seq) {
   igLocks.delete(actorId);
 }
 // ====================== UI LOCK END ======================
-
-function shortAddr(addr) {
-  if (!addr) return "";
-  const s = String(addr);
-  return s.length > 14 ? `${s.slice(0, 8)}…${s.slice(-6)}` : s;
-}
 
 function kindLabelFromContractKind(kind) {
   return kind === "LP_NFT" ? "LP" : kind === "LOAN_NFT" ? "LOAN" : String(kind || "UNKNOWN");
@@ -107,7 +102,7 @@ function contractSelectRow({ userKey, contracts }) {
     const k = kindLabelFromContractKind(c.kind);
     return {
       label: `${k} — ${c.chain_id} — ${c.protocol || "UNKNOWN"}`.trim(),
-      description: shortAddr(c.address_eip55),
+      description: shortenAddress(c.address_eip55),
       value: String(c.id), // contractId
     };
   });
@@ -127,7 +122,7 @@ function walletSelectRow({ userKey, contractId, wallets }) {
 
   const options = enabled.slice(0, 25).map((w) => ({
     label: `${w.chain_id}${w.label ? ` — ${w.label}` : ""}`.trim(),
-    description: shortAddr(w.address_eip55),
+    description: shortenAddress(w.address_eip55),
     value: String(w.id), // walletId
   }));
 
@@ -147,7 +142,7 @@ function removeIgnoreSelectRow({ userKey, ignores }) {
     const kindLabel = kindLabelFromContractKind(r.kind);
     return {
       label: `${kindLabel} — ${r.chain_id} — ${r.protocol || "UNKNOWN"}`,
-      description: `${r.wallet_label ? r.wallet_label + " " : ""}${shortAddr(r.wallet_address)} | ID ${idText}`,
+      description: `${r.wallet_label ? r.wallet_label + " " : ""}${shortenAddress(r.wallet_address)} | ID ${idText}`,
       value: String(r.id),
     };
   });
@@ -212,7 +207,7 @@ function buildMainEmbed({ discordName, ignores }) {
     const wl = r.wallet_label ? `**${r.wallet_label}** ` : "";
     const idText = r.token_id == null ? "(ALL)" : String(r.token_id);
     const kind = kindLabelFromContractKind(r.kind);
-    return `• **${kind}** ${r.chain_id} **${r.protocol || "UNKNOWN"}** | ${wl}\`${shortAddr(r.wallet_address)}\` | ID **${idText}**`;
+    return `• **${kind}** ${r.chain_id} **${r.protocol || "UNKNOWN"}** | ${wl}\`${shortenAddress(r.wallet_address)}\` | ID **${idText}**`;
   });
 
   embed.addFields({
@@ -257,7 +252,9 @@ function renderPickWallet({ actorId, contractRow, wallets }) {
     .setDescription(
       [
         `Contract: **${kind} — ${contractRow.chain_id} — ${contractRow.protocol}**`,
-        shortAddr(contractRow.address_eip55) ? `Address: \`${shortAddr(contractRow.address_eip55)}\`` : null,
+        shortenAddress(contractRow.address_eip55)
+          ? `Address: \`${shortenAddress(contractRow.address_eip55)}\``
+          : null,
         "",
         "Pick the wallet that owns the NFT position you want to ignore.",
       ]

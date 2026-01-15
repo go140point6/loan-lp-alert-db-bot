@@ -21,6 +21,7 @@ const uniswapV3PoolAbi = require("../abi/uniswapV3Pool.json");
 const { getDb } = require("../db");
 const { getProviderForChain } = require("../utils/ethers/providers");
 const { handleLiquidationAlert, handleRedemptionAlert } = require("./alertEngine");
+const { applyGlobalIrOffset, applyPriceMultiplier, logRunApplied } = require("./testOffsets");
 const logger = require("../utils/logger");
 
 // -----------------------------
@@ -53,9 +54,8 @@ const LIQ_BUFFER_WARN = requireNumberEnv("LIQ_BUFFER_WARN");
 const LIQ_BUFFER_HIGH = requireNumberEnv("LIQ_BUFFER_HIGH");
 const LIQ_BUFFER_CRIT = requireNumberEnv("LIQ_BUFFER_CRIT");
 
-const REDEMP_BELOW_HIGH = requireNumberEnv("REDEMP_BELOW_HIGH");
-const REDEMP_BELOW_MED = requireNumberEnv("REDEMP_BELOW_MED");
-const REDEMP_NEUTRAL_ABS = requireNumberEnv("REDEMP_NEUTRAL_ABS");
+const REDEMP_BELOW_CRITICAL = requireNumberEnv("REDEMP_BELOW_CRITICAL");
+const REDEMP_ABOVE_MED = requireNumberEnv("REDEMP_ABOVE_MED");
 
 const CDP_REDEMPTION_TRIGGER = requireNumberEnv("CDP_REDEMPTION_TRIGGER");
 
@@ -73,10 +73,9 @@ const GLOBAL_IR_BRANCHES = requireEnv("GLOBAL_IR_BRANCHES")
   .filter(Boolean);
 
 const LIQ_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
-const REDEMP_TIER_ORDER = ["LOW", "NEUTRAL", "MEDIUM", "HIGH", "UNKNOWN"];
+const REDEMP_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 
 const LIQ_ALERT_MIN_TIER = requireEnv("LIQ_ALERT_MIN_TIER");
-const REDEMP_ALERT_MIN_TIER = requireEnv("REDEMP_ALERT_MIN_TIER");
 
 // -----------------------------
 // Helpers
@@ -123,74 +122,6 @@ async function getOraclePrice(priceFeedContract) {
   } catch (_) {}
 
   return { rawPrice: null, source: null };
-}
-
-// -----------------------------
-// TEST OVERRIDES (Option A)
-// Stored in global_params with chain_id='*' and keys:
-//   TEST_OVERRIDE:LIQ:<contractId>:<tokenId>
-//   TEST_OVERRIDE:REDEMP:<contractId>:<tokenId>
-// value_text JSON:
-//   { "untilMs": <epoch ms>, "active": true|false, "tier": "HIGH", "status": "...optional..." }
-// -----------------------------
-function getTestOverride(kind, contractId, tokenId) {
-  const k = String(kind || "").toUpperCase();
-  if (!["LIQ", "REDEMP"].includes(k)) return null;
-
-  const cid = String(contractId);
-  const tid = String(tokenId);
-
-  const db = getDb();
-  const key = `TEST_OVERRIDE:${k}:${cid}:${tid}`;
-
-  const row = db
-    .prepare(
-      `
-      SELECT value_text AS valueText
-      FROM global_params
-      WHERE chain_id='*'
-        AND param_key = ?
-      LIMIT 1
-    `
-    )
-    .get(key);
-
-  if (!row || !row.valueText) return null;
-
-  let obj;
-  try {
-    obj = JSON.parse(row.valueText);
-  } catch (e) {
-    logger.warn(`[loanMonitor] Test override key=${key} has invalid JSON; ignoring.`);
-    return null;
-  }
-
-  const untilMs = Number(obj?.untilMs);
-  if (!Number.isFinite(untilMs) || untilMs <= 0) {
-    logger.warn(`[loanMonitor] Test override key=${key} missing/invalid untilMs; ignoring.`);
-    return null;
-  }
-
-  const now = Date.now();
-  if (now > untilMs) {
-    // Expired: best-effort cleanup
-    try {
-      db.prepare(`DELETE FROM global_params WHERE chain_id='*' AND param_key=?`).run(key);
-      logger.debug(`[loanMonitor] Test override expired and removed: ${key}`);
-    } catch (_) {}
-    return null;
-  }
-
-  // Normalize fields
-  const out = {
-    key,
-    untilMs,
-    active: obj?.active === undefined ? undefined : Boolean(obj.active),
-    tier: obj?.tier ? String(obj.tier).toUpperCase() : undefined,
-  };
-
-  logger.debug(`[loanMonitor] Test override applied: ${key} -> ${JSON.stringify(out)}`);
-  return out;
 }
 
 // -----------------------------
@@ -303,7 +234,8 @@ function getGlobalInterestRatePctFromMap(protocol, globalIrMap) {
   const branchKey = inferBranchKeyFromProtocol(protocol);
   if (!branchKey) return null;
   const v = globalIrMap[branchKey];
-  return typeof v === "number" && Number.isFinite(v) ? v : null;
+  const out = typeof v === "number" && Number.isFinite(v) ? v : null;
+  return applyGlobalIrOffset(out);
 }
 
 // -----------------------------
@@ -313,12 +245,11 @@ function classifyRedemptionTier(interestPct, globalPct) {
   if (globalPct == null) return { tier: "UNKNOWN", diffPct: null };
 
   const diff = interestPct - globalPct;
-  const absDiff = Math.abs(diff);
 
   let tier;
-  if (diff <= REDEMP_BELOW_HIGH) tier = "HIGH";
-  else if (diff <= REDEMP_BELOW_MED) tier = "MEDIUM";
-  else if (absDiff <= REDEMP_NEUTRAL_ABS) tier = "NEUTRAL";
+  if (diff <= REDEMP_BELOW_CRITICAL) tier = "CRITICAL";
+  else if (diff <= 0) tier = "HIGH";
+  else if (diff <= REDEMP_ABOVE_MED) tier = "MEDIUM";
   else tier = "LOW";
 
   return { tier, diffPct: diff };
@@ -429,6 +360,7 @@ function getMonitoredLoanRows(userId = null) {
       c.protocol        AS protocol,
       uw.address_eip55  AS owner,
       uw.address_lower  AS ownerLower,
+      uw.label          AS walletLabel,
       c.address_eip55   AS contract,
       nt.token_id       AS troveId
     FROM user_wallets uw
@@ -461,7 +393,7 @@ function getMonitoredLoanRows(userId = null) {
 // Summary builder (no logging, for /my-loans and heartbeat)
 // -----------------------------
 async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrMap) {
-  const { userId, walletId, contractId, contract, owner, troveId } = row;
+  const { userId, walletId, contractId, contract, owner, troveId, walletLabel } = row;
 
   const troveNFT = new ethers.Contract(contract, troveNftAbi, provider);
 
@@ -504,6 +436,7 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
     protocol,
     chainId,
     owner,
+    walletLabel,
     troveId: String(troveId),
     nftContract: contract,
 
@@ -537,7 +470,8 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
 
   if (!rawPrice) return base;
 
-  const priceNorm = Number(ethers.formatUnits(rawPrice, 18));
+  const priceNormRaw = Number(ethers.formatUnits(rawPrice, 18));
+  const priceNorm = applyPriceMultiplier(priceNormRaw);
   const mcrNorm = Number(ethers.formatUnits(await troveManager.MCR(), 18));
 
   const collValue = collNorm * priceNorm;
@@ -572,7 +506,7 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
 // Core loan description -> alerts (v2 ids)
 // -----------------------------
 async function describeLoanPosition(provider, chainId, protocol, row, { cdpState, globalIrMap }) {
-  const { userId, walletId, contractId, contract, owner, troveId } = row;
+  const { userId, walletId, contractId, contract, owner, troveId, walletLabel } = row;
 
   const troveNFT = new ethers.Contract(contract, troveNftAbi, provider);
 
@@ -604,7 +538,8 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
   const { rawPrice } = await getOraclePrice(priceFeed);
   if (!rawPrice) return;
 
-  const priceNorm = Number(ethers.formatUnits(rawPrice, 18));
+  const priceNormRaw = Number(ethers.formatUnits(rawPrice, 18));
+  const priceNorm = applyPriceMultiplier(priceNormRaw);
   const mcrNorm = Number(ethers.formatUnits(await troveManager.MCR(), 18));
 
   const collValue = collNorm * priceNorm;
@@ -617,18 +552,9 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
 
   const liqClass = classifyLiquidationRisk(bufferFrac);
 
-  // -----------------------------
-  // ✅ Apply TEST overrides (LIQ / REDEMP) at the LAST moment (alerts only)
-  // -----------------------------
-  const liqOverride = getTestOverride("LIQ", contractId, troveId);
-  const redOverride = getTestOverride("REDEMP", contractId, troveId);
-
   // Liquidation alert (DB-stable identity)
-  const liqTierFinal = liqOverride?.tier || liqClass.tier;
-  const liqIsActiveFinal =
-    typeof liqOverride?.active === "boolean"
-      ? liqOverride.active
-      : isTierAtLeast(liqTierFinal, LIQ_ALERT_MIN_TIER, LIQ_TIER_ORDER);
+  const liqTierFinal = liqClass.tier;
+  const liqIsActiveFinal = isTierAtLeast(liqTierFinal, LIQ_ALERT_MIN_TIER, LIQ_TIER_ORDER);
 
   await handleLiquidationAlert({
     userId,
@@ -638,6 +564,7 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
 
     protocol,
     wallet: owner,
+    walletLabel,
 
     isActive: liqIsActiveFinal,
     tier: liqTierFinal,
@@ -648,15 +575,11 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
     status: statusStr,
   });
 
-  // Redemption alert requires CDP active (unless override forces active)
+  // Redemption alert requires CDP active
   const cdpIsActive = cdpState && cdpState.state === "ACTIVE";
 
-  const redTierFinal = redOverride?.tier || redClass.tier;
-  const redGatedActive =
-    cdpIsActive && isTierAtLeast(redTierFinal, REDEMP_ALERT_MIN_TIER, REDEMP_TIER_ORDER);
-
-  const redIsActiveFinal =
-    typeof redOverride?.active === "boolean" ? redOverride.active : redGatedActive;
+  const redTierFinal = redClass.tier;
+  const redIsActiveFinal = cdpIsActive && globalIrPct != null;
 
   await handleRedemptionAlert({
     userId,
@@ -666,6 +589,7 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
 
     protocol,
     wallet: owner,
+    walletLabel,
 
     isActive: redIsActiveFinal,
     tier: redTierFinal,
@@ -732,6 +656,8 @@ async function monitorLoans() {
       }
     }
   }
+
+  logRunApplied();
 }
 
 // -----------------------------

@@ -2,9 +2,22 @@
 // DB-backed alert state + logging + Discord DM alerts (NEW SCHEMA)
 
 const crypto = require("crypto");
+const { EmbedBuilder } = require("discord.js");
 const { getDb } = require("../db");
 const { sendLongDM } = require("../utils/discord/sendLongDM");
 const logger = require("../utils/logger");
+const { shortenAddress } = require("../utils/ethers/shortenAddress");
+const { shortenTroveId } = require("../utils/ethers/shortenTroveId");
+
+function trendLabel(prevTier, newTier, order) {
+  const p = (prevTier || "").toString().toUpperCase();
+  const n = (newTier || "").toString().toUpperCase();
+  const pi = order.indexOf(p);
+  const ni = order.indexOf(n);
+  if (pi === -1 || ni === -1 || pi === ni) return { emoji: "⚪", label: "Steady" };
+  if (ni < pi) return { emoji: "🟢", label: "Improving" };
+  return { emoji: "🔴", label: "Worsening" };
+}
 
 let _client = null;
 function setAlertEngineClient(client) {
@@ -112,63 +125,6 @@ function disableUserDm(userId, reason = null) {
   }
 }
 
-function getTestOverrideFromTable(kind, contractId, tokenId) {
-  const k = String(kind).toUpperCase();
-  const cid = Number(contractId);
-  const tid = String(tokenId);
-
-  const db = getDb();
-  const row = db
-    .prepare(
-      `
-      SELECT value_text AS valueText
-      FROM test_overrides
-      WHERE kind = ?
-        AND contract_id = ?
-        AND token_id = ?
-      LIMIT 1
-    `
-    )
-    .get(k, cid, tid);
-
-  if (!row || !row.valueText) return null;
-
-  let obj;
-  try {
-    obj = JSON.parse(row.valueText);
-  } catch {
-    logger.warn(`[alertEngine] Invalid JSON for test override ${k}:${cid}:${tid}`);
-    return null;
-  }
-
-  const untilMs = Number(obj?.untilMs);
-  if (!Number.isFinite(untilMs) || untilMs <= 0) return null;
-
-  const now = Date.now();
-  if (now > untilMs) {
-    try {
-      db.prepare(
-        `DELETE FROM test_overrides WHERE kind=? AND contract_id=? AND token_id=?`
-      ).run(k, cid, tid);
-      logger.debug(`[alertEngine] Test override expired and removed: ${k}:${cid}:${tid}`);
-    } catch {}
-    return null;
-  }
-
-  const out = { kind: k, contractId: cid, tokenId: tid, untilMs };
-
-  if (obj?.tier != null) out.tier = String(obj.tier).toUpperCase();
-  if (obj?.active !== undefined) out.active = Boolean(obj.active);
-
-  // LP-only field
-  if (k === "LP" && obj?.status != null) {
-    out.status = normLpStatus(obj.status);
-  }
-
-  logger.debug(`[alertEngine] Test override applied: ${k}:${cid}:${tid} -> ${JSON.stringify(out)}`);
-  return out;
-}
-
 /**
  * Discord DM failure classifier.
  * Only disable DMs for strong signals that user can't be messaged.
@@ -244,19 +200,142 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
   }
   if (!user) return;
 
-  const lines = [];
-  lines.push(`${logPrefix} ${phase} ${alertType} ALERT`);
-  lines.push(message);
-
-  if (meta && Object.keys(meta).length > 0) {
-    lines.push("");
-    lines.push("Details:");
-    for (const [k, v] of Object.entries(meta)) {
-      lines.push(`• ${k}: ${v}`);
-    }
-  }
-
   try {
+    if (alertType === "REDEMPTION") {
+      const fmt2 = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "n/a");
+      const prevTier = meta?.prevTier || "UNKNOWN";
+      const newTier = meta?.newTier || "UNKNOWN";
+      const trend = trendLabel(prevTier, newTier, ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]);
+      const phaseTag =
+        phase === "UPDATED"
+          ? ` ${trend.emoji} ${trend.label}`
+          : phase === "NEW"
+          ? " ⚠️"
+          : phase === "RESOLVED"
+          ? " ✅"
+          : "";
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Redemption Alert (${phase}${phaseTag})`)
+        .setDescription(message)
+        .setColor(phase === "RESOLVED" ? "DarkGrey" : phase === "UPDATED" ? "Orange" : "Red")
+        .setTimestamp();
+
+      if (client.user) embed.setThumbnail(client.user.displayAvatarURL());
+
+      const fields = [
+        { name: "Trove", value: meta?.troveId || "n/a", inline: true },
+        { name: "Wallet", value: meta?.wallet || "n/a", inline: true },
+      ];
+      if (meta?.walletLabel) fields.push({ name: "Label", value: meta.walletLabel, inline: true });
+      fields.push(
+        { name: "Tier", value: `${prevTier} -> ${newTier}`, inline: false },
+        { name: "Loan IR", value: `${fmt2(meta?.loanIR)}%`, inline: true },
+        { name: "Global IR", value: `${fmt2(meta?.globalIR)}%`, inline: true }
+      );
+      embed.addFields(fields);
+
+      await user.send({ embeds: [embed] });
+      return;
+    }
+
+    if (alertType === "LIQUIDATION") {
+      const fmt2 = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "n/a");
+      const prevTier = meta?.prevTier || "UNKNOWN";
+      const newTier = meta?.newTier || "UNKNOWN";
+      const trend = trendLabel(prevTier, newTier, ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]);
+      const phaseTag =
+        phase === "UPDATED"
+          ? ` ${trend.emoji} ${trend.label}`
+          : phase === "NEW"
+          ? " ⚠️"
+          : phase === "RESOLVED"
+          ? " ✅"
+          : "";
+      const bufferPct =
+        typeof meta?.liquidationBufferFrac === "number" && Number.isFinite(meta?.liquidationBufferFrac)
+          ? `${(meta.liquidationBufferFrac * 100).toFixed(2)}%`
+          : "n/a";
+
+      const embed = new EmbedBuilder()
+        .setTitle(`Liquidation Alert (${phase}${phaseTag})`)
+        .setDescription(message)
+        .setColor(phase === "RESOLVED" ? "DarkGrey" : phase === "UPDATED" ? "Orange" : "Red")
+        .setTimestamp();
+
+      if (client.user) embed.setThumbnail(client.user.displayAvatarURL());
+
+      const fields = [
+        { name: "Trove", value: meta?.troveId || "n/a", inline: true },
+        { name: "Wallet", value: meta?.wallet || "n/a", inline: true },
+      ];
+      if (meta?.walletLabel) fields.push({ name: "Label", value: meta.walletLabel, inline: true });
+      fields.push(
+        { name: "Tier", value: `${prevTier} -> ${newTier}`, inline: false },
+        { name: "LTV", value: `${fmt2(meta?.ltvPct)}%`, inline: true },
+        { name: "Buffer", value: bufferPct, inline: true },
+        {
+          name: "Price / Liq",
+          value: `${fmt2(meta?.currentPrice)} / ${fmt2(meta?.liquidationPrice)}`,
+          inline: true,
+        }
+      );
+      embed.addFields(fields);
+
+      await user.send({ embeds: [embed] });
+      return;
+    }
+
+    if (alertType === "LP_RANGE") {
+      const prevTier = meta?.prevTier || "UNKNOWN";
+      const newTier = meta?.newTier || "UNKNOWN";
+      const prevStatus = meta?.prevStatus || "UNKNOWN";
+      const currentStatus = meta?.currentStatus || "UNKNOWN";
+      const trend = trendLabel(prevTier, newTier, ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]);
+      const phaseTag =
+        phase === "UPDATED"
+          ? ` ${trend.emoji} ${trend.label}`
+          : phase === "NEW"
+          ? " ⚠️"
+          : phase === "RESOLVED"
+          ? " ✅"
+          : "";
+
+      const embed = new EmbedBuilder()
+        .setTitle(`LP Range Alert (${phase}${phaseTag})`)
+        .setDescription(message)
+        .setColor(phase === "RESOLVED" ? "DarkGrey" : phase === "UPDATED" ? "Orange" : "Red")
+        .setTimestamp();
+
+      if (client.user) embed.setThumbnail(client.user.displayAvatarURL());
+
+      const fields = [
+        { name: "Position", value: meta?.positionId || "n/a", inline: true },
+        { name: "Wallet", value: meta?.wallet || "n/a", inline: true },
+      ];
+      if (meta?.walletLabel) fields.push({ name: "Label", value: meta.walletLabel, inline: true });
+      fields.push(
+        { name: "Status", value: `${prevStatus} -> ${currentStatus}`, inline: false },
+        { name: "Tier", value: `${prevTier} -> ${newTier}`, inline: false }
+      );
+      embed.addFields(fields);
+
+      await user.send({ embeds: [embed] });
+      return;
+    }
+
+    const lines = [];
+    lines.push(`${logPrefix} ${phase} ${alertType} ALERT`);
+    lines.push(message);
+
+    if (meta && Object.keys(meta).length > 0) {
+      lines.push("");
+      lines.push("Details:");
+      for (const [k, v] of Object.entries(meta)) {
+        lines.push(`• ${k}: ${v}`);
+      }
+    }
+
     await sendLongDM(user, lines.join("\n"));
   } catch (err) {
     console.error(`${logPrefix} [dm] Failed to send DM to ${target.discordId}:`, err?.message || err);
@@ -268,9 +347,10 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
 // -----------------------------
 // Structured alert state/log (NEW SCHEMA)
 // -----------------------------
-function getPrevState({ userId, walletId, contractId, tokenId }) {
+function getPrevState({ userId, walletId, contractId, tokenId, alertType }) {
   const db = getDb();
 
+  const alertTypeU = (alertType || "GENERIC").toString().toUpperCase();
   const row = db
     .prepare(
       `
@@ -280,29 +360,41 @@ function getPrevState({ userId, walletId, contractId, tokenId }) {
         AND wallet_id = ?
         AND contract_id = ?
         AND token_id = ?
+        AND alert_type = ?
       LIMIT 1
     `
     )
-    .get(userId, walletId, contractId, tokenId);
+    .get(userId, walletId, contractId, tokenId, alertTypeU);
 
-  return row || { isActive: 0, signature: null, stateJson: null };
+  if (!row) return { isActive: 0, signature: null, stateJson: null, exists: false };
+  return { ...row, exists: true };
 }
 
-function upsertAlertState({ userId, walletId, contractId, tokenId, isActive, signature, stateJson }) {
+function upsertAlertState({
+  userId,
+  walletId,
+  contractId,
+  tokenId,
+  alertType,
+  isActive,
+  signature,
+  stateJson,
+}) {
   const db = getDb();
+  const alertTypeU = (alertType || "GENERIC").toString().toUpperCase();
 
   db.prepare(
     `
     INSERT INTO alert_state (
-      user_id, wallet_id, contract_id, token_id,
+      user_id, wallet_id, contract_id, token_id, alert_type,
       is_active, signature, state_json,
       last_seen_at, created_at
     ) VALUES (
-      @userId, @walletId, @contractId, @tokenId,
+      @userId, @walletId, @contractId, @tokenId, @alertType,
       @isActive, @signature, @stateJson,
       datetime('now'), datetime('now')
     )
-    ON CONFLICT(user_id, wallet_id, contract_id, token_id) DO UPDATE SET
+    ON CONFLICT(user_id, wallet_id, contract_id, token_id, alert_type) DO UPDATE SET
       is_active    = excluded.is_active,
       signature    = excluded.signature,
       state_json   = excluded.state_json,
@@ -313,6 +405,7 @@ function upsertAlertState({ userId, walletId, contractId, tokenId, isActive, sig
     walletId,
     contractId,
     tokenId,
+    alertType: alertTypeU,
     isActive: isActive ? 1 : 0,
     signature: signature ?? null,
     stateJson: stateJson ?? null,
@@ -385,7 +478,7 @@ async function processAlert({
   const signature = makeSignature(signaturePayload);
   const stateJson = state && typeof state === "object" ? JSON.stringify(state) : null;
 
-  const prev = getPrevState({ userId, walletId, contractId, tokenId });
+  const prev = getPrevState({ userId, walletId, contractId, tokenId, alertType });
   const prevActive = prev.isActive === 1;
 
   if (isActive && !prevActive) {
@@ -396,6 +489,7 @@ async function processAlert({
       walletId,
       contractId,
       tokenId,
+      alertType,
       isActive: true,
       signature,
       stateJson,
@@ -424,6 +518,7 @@ async function processAlert({
       walletId,
       contractId,
       tokenId,
+      alertType,
       isActive: true,
       signature,
       stateJson,
@@ -445,7 +540,16 @@ async function processAlert({
   }
 
   if (isActive && prevActive && prev.signature === signature) {
-    upsertAlertState({ userId, walletId, contractId, tokenId, isActive: true, signature, stateJson });
+    upsertAlertState({
+      userId,
+      walletId,
+      contractId,
+      tokenId,
+      alertType,
+      isActive: true,
+      signature,
+      stateJson,
+    });
     return;
   }
 
@@ -457,6 +561,7 @@ async function processAlert({
       walletId,
       contractId,
       tokenId,
+      alertType,
       isActive: false,
       signature: null,
       stateJson,
@@ -480,7 +585,16 @@ async function processAlert({
   }
 
   if (!isActive && !prevActive) {
-    upsertAlertState({ userId, walletId, contractId, tokenId, isActive: false, signature: null, stateJson });
+    upsertAlertState({
+      userId,
+      walletId,
+      contractId,
+      tokenId,
+      alertType,
+      isActive: false,
+      signature: null,
+      stateJson,
+    });
   }
 }
 
@@ -507,105 +621,6 @@ function normLpStatus(s) {
   return x;
 }
 
-function normTier(s) {
-  const t = (s || "").toString().trim().toUpperCase();
-  if (!t) return "UNKNOWN";
-  return t;
-}
-
-// -----------------------------
-// TEST OVERRIDES (Option A) — LP + LIQ + REDEMP
-// global_params row:
-//   chain_id='*'
-//   param_key = TEST_OVERRIDE:<KIND>:<contractId>:<tokenId>
-// value_text JSON:
-//   LP:     { "untilMs": <epoch ms>, "status": "...", "tier": "...", "active": true|false }
-//   LIQ:    { "untilMs": <epoch ms>, "tier": "...", "active": true|false }
-//   REDEMP:  { "untilMs": <epoch ms>, "tier": "...", "active": true|false }
-// -----------------------------
-function getTestOverride(kind, contractId, tokenId) {
-  const k = String(kind || "").trim().toUpperCase();
-  if (!k) return null;
-
-  const cid = String(contractId);
-  const tid = String(tokenId);
-  const key = `TEST_OVERRIDE:${k}:${cid}:${tid}`;
-
-  const db = getDb();
-  const row = db
-    .prepare(
-      `
-      SELECT value_text AS valueText
-      FROM global_params
-      WHERE chain_id='*'
-        AND param_key = ?
-      LIMIT 1
-    `
-    )
-    .get(key);
-
-  if (!row || !row.valueText) return null;
-
-  let obj;
-  try {
-    obj = JSON.parse(row.valueText);
-  } catch (_) {
-    logger.warn(`[alertEngine] Test override key=${key} has invalid JSON; ignoring.`);
-    return null;
-  }
-
-  const untilMs = Number(obj?.untilMs);
-  if (!Number.isFinite(untilMs) || untilMs <= 0) {
-    logger.warn(`[alertEngine] Test override key=${key} missing/invalid untilMs; ignoring.`);
-    return null;
-  }
-
-  const now = Date.now();
-  if (now > untilMs) {
-    // Expired: best-effort cleanup
-    try {
-      db.prepare(`DELETE FROM global_params WHERE chain_id='*' AND param_key=?`).run(key);
-      logger.debug(`[alertEngine] Test override expired and removed: ${key}`);
-    } catch (_) {}
-    return null;
-  }
-
-  const out = { key, untilMs };
-
-  if (k === "LP") {
-    if (obj?.status != null) out.status = normLpStatus(obj.status);
-    if (obj?.tier != null) out.tier = normTier(obj.tier);
-    if (obj?.active !== undefined) out.active = Boolean(obj.active);
-    logger.debug(`[alertEngine] Test override applied: ${key} -> ${JSON.stringify(out)}`);
-    return out;
-  }
-
-  // LIQ / REDEMP
-  if (obj?.tier != null) out.tier = normTier(obj.tier);
-  if (obj?.active !== undefined) out.active = Boolean(obj.active);
-
-  logger.debug(`[alertEngine] Test override applied: ${key} -> ${JSON.stringify(out)}`);
-  return out;
-}
-
-// -----------------------------
-// TEST OVERRIDES — LP
-// table: test_overrides (kind, contract_id, token_id, value_text JSON)
-// JSON:
-//   { "untilMs": <epoch ms>, "status": "IN_RANGE|OUT_OF_RANGE|INACTIVE", "tier": "HIGH", "active": true|false }
-// -----------------------------
-function getTestOverrideLP(contractId, tokenId) {
-  return getTestOverrideFromTable("LP", contractId, tokenId);
-}
-
-function getTestOverrideLIQ(contractId, tokenId) {
-  return getTestOverrideFromTable("LIQ", contractId, tokenId);
-}
-
-function getTestOverrideREDEMP(contractId, tokenId) {
-  return getTestOverrideFromTable("REDEMP", contractId, tokenId);
-}
-
 /* ---------------------------
  * Public alert handlers
  * -------------------------- */
@@ -624,6 +639,7 @@ async function handleLiquidationAlert(data) {
     liquidationBufferFrac,
     protocol,
     wallet,
+    walletLabel,
   } = data;
 
   const tokenId = String(positionId);
@@ -631,31 +647,13 @@ async function handleLiquidationAlert(data) {
 
   const nowMs = Date.now();
 
-  // -----------------------------
-  // ✅ Apply Option A test override (LIQ) BEFORE debounce logic
-  // -----------------------------
-  const override = getTestOverrideLIQ(contractId, tokenId);
-
   let observedActiveFinal = Boolean(observedActive);
   let tierU = (tier || "UNKNOWN").toString().toUpperCase();
-
-  if (override) {
-    if (override.tier) tierU = override.tier;
-    if (override.active !== undefined) observedActiveFinal = Boolean(override.active);
-  }
-
-  const overrideMeta =
-    override
-      ? {
-          testOverride: `YES (expires ${new Date(override.untilMs).toISOString()})`,
-          testOverrideKey: override.key,
-        }
-      : null;
 
   const LIQ_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 
   // pull prev state
-  const prev = getPrevState({ userId, walletId, contractId, tokenId });
+  const prev = getPrevState({ userId, walletId, contractId, tokenId, alertType });
   const prevActive = prev.isActive === 1;
 
   let prevObj = null;
@@ -712,9 +710,41 @@ async function handleLiquidationAlert(data) {
             lastTier: prevTierU,
           },
           logPrefix: "[LIQ]",
-          message: `Loan pending liquidation debounce (${protocol}, wallet=${wallet}, tier=${tierU})`,
-          meta: { tier: tierU, liquidationBufferFrac, ...(overrideMeta || {}) },
+          message: `Loan pending liquidation debounce ${protocol}`,
+          meta: {
+            wallet: shortenAddress(wallet),
+            walletLabel,
+            troveId: shortenTroveId(tokenId),
+            prevTier: prevTierU,
+            newTier: tierU,
+            ltvPct,
+            liquidationPrice,
+            currentPrice,
+            liquidationBufferFrac,
+          },
           alertType,
+        });
+        return;
+      }
+
+      if (!prev.exists) {
+        const signature = makeSignature(sigPayload);
+        upsertAlertState({
+          userId,
+          walletId,
+          contractId,
+          tokenId,
+          alertType,
+          isActive: true,
+          signature,
+          stateJson: JSON.stringify({
+            ...baseState,
+            confirmedStatus: "ON",
+            candidateStatus: null,
+            candidateSinceMs: 0,
+            lastAlertAtMs: nowMs,
+            lastTier: tierU,
+          }),
         });
         return;
       }
@@ -735,14 +765,17 @@ async function handleLiquidationAlert(data) {
           lastTier: tierU,
         },
         logPrefix: "[LIQ]",
-        message: `Loan at risk of liquidation (${protocol}, wallet=${wallet}, tier=${tierU})`,
+        message: `Loan at risk of liquidation ${protocol}`,
         meta: {
-          tier: tierU,
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          troveId: shortenTroveId(tokenId),
+          prevTier: prevTierU,
+          newTier: tierU,
           ltvPct,
           liquidationPrice,
           currentPrice,
           liquidationBufferFrac,
-          ...(overrideMeta || {}),
         },
         alertType,
       });
@@ -756,8 +789,64 @@ async function handleLiquidationAlert(data) {
     const cooldownOk = nowMs - lastAlertAtMs >= LOAN_LIQ_ALERT_COOLDOWN_MS;
     const escalated = isTierEscalation(prevTierU, tierU, LIQ_TIER_ORDER);
 
-    const allowNotifyUpdate = wouldUpdate && (cooldownOk || escalated);
+    const tierChanged = prevTierU !== tierU;
+    const allowNotifyUpdate = wouldUpdate && (cooldownOk || escalated) && tierChanged;
     const newLastAlertAtMs = allowNotifyUpdate ? nowMs : lastAlertAtMs;
+
+    if (!wouldUpdate) {
+      await processAlert({
+        userId,
+        walletId,
+        contractId,
+        tokenId,
+        isActive: true,
+        signaturePayload: sigPayload,
+        state: {
+          ...baseState,
+          confirmedStatus: "ON",
+          candidateStatus: null,
+          candidateSinceMs: 0,
+          lastAlertAtMs: newLastAlertAtMs,
+          lastTier: tierU,
+        },
+        logPrefix: "[LIQ]",
+        message: `Loan at risk of liquidation ${protocol}`,
+        meta: {
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          troveId: shortenTroveId(tokenId),
+          prevTier: prevTierU,
+          newTier: tierU,
+          ltvPct,
+          liquidationPrice,
+          currentPrice,
+          liquidationBufferFrac,
+        },
+        alertType,
+      });
+      return;
+    }
+
+    if (!allowNotifyUpdate) {
+      upsertAlertState({
+        userId,
+        walletId,
+        contractId,
+        tokenId,
+        alertType,
+        isActive: true,
+        signature,
+        stateJson: JSON.stringify({
+          ...baseState,
+          confirmedStatus: "ON",
+          candidateStatus: null,
+          candidateSinceMs: 0,
+          lastAlertAtMs: newLastAlertAtMs,
+          lastTier: tierU,
+        }),
+      });
+      return;
+    }
 
     await processAlert({
       userId,
@@ -775,14 +864,17 @@ async function handleLiquidationAlert(data) {
         lastTier: tierU,
       },
       logPrefix: "[LIQ]",
-      message: `Loan at risk of liquidation (${protocol}, wallet=${wallet}, tier=${tierU})`,
+      message: `Loan at risk of liquidation ${protocol}`,
       meta: {
-        tier: tierU,
+        wallet: shortenAddress(wallet),
+            walletLabel,
+        troveId: shortenTroveId(tokenId),
+        prevTier: prevTierU,
+        newTier: tierU,
         ltvPct,
         liquidationPrice,
         currentPrice,
         liquidationBufferFrac,
-        ...(overrideMeta || {}),
       },
       alertType,
     });
@@ -815,8 +907,18 @@ async function handleLiquidationAlert(data) {
           lastTier: prevTierU,
         },
         logPrefix: "[LIQ]",
-        message: `Loan pending liquidation resolve debounce (${protocol}, wallet=${wallet})`,
-        meta: { tier: tierU, liquidationBufferFrac, ...(overrideMeta || {}) },
+        message: `Loan pending liquidation resolve debounce ${protocol}`,
+        meta: {
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          troveId: shortenTroveId(tokenId),
+          prevTier: prevTierU,
+          newTier: tierU,
+          ltvPct,
+          liquidationPrice,
+          currentPrice,
+          liquidationBufferFrac,
+        },
         alertType,
       });
       return;
@@ -838,8 +940,18 @@ async function handleLiquidationAlert(data) {
         lastTier: prevTierU,
       },
       logPrefix: "[LIQ]",
-      message: `Loan liquidation risk cleared (${protocol}, wallet=${wallet})`,
-      meta: { tier: tierU, liquidationBufferFrac, ...(overrideMeta || {}) },
+      message: `Loan liquidation risk cleared ${protocol}`,
+      meta: {
+        wallet: shortenAddress(wallet),
+            walletLabel,
+        troveId: shortenTroveId(tokenId),
+        prevTier: prevTierU,
+        newTier: tierU,
+        ltvPct,
+        liquidationPrice,
+        currentPrice,
+        liquidationBufferFrac,
+      },
       alertType,
       notifyOnResolved: false,
     });
@@ -862,8 +974,18 @@ async function handleLiquidationAlert(data) {
       lastTier: tierU,
     },
     logPrefix: "[LIQ]",
-    message: `Loan liquidation steady (${protocol}, wallet=${wallet})`,
-    meta: { tier: tierU, liquidationBufferFrac, ...(overrideMeta || {}) },
+    message: `Loan liquidation steady ${protocol}`,
+    meta: {
+      wallet: shortenAddress(wallet),
+            walletLabel,
+      troveId: shortenTroveId(tokenId),
+      prevTier: prevTierU,
+      newTier: tierU,
+      ltvPct,
+      liquidationPrice,
+      currentPrice,
+      liquidationBufferFrac,
+    },
     alertType,
   });
 }
@@ -881,6 +1003,7 @@ async function handleRedemptionAlert(data) {
     isCDPActive,
     protocol,
     wallet,
+    walletLabel,
   } = data;
 
   const tokenId = String(positionId);
@@ -888,31 +1011,13 @@ async function handleRedemptionAlert(data) {
 
   const nowMs = Date.now();
 
-  // -----------------------------
-  // ✅ Apply Option A test override (REDEMP) BEFORE debounce logic
-  // -----------------------------
-  const override = getTestOverrideREDEMP(contractId, tokenId);
-
   let observedActiveFinal = Boolean(observedActive);
   let tierU = (tier || "UNKNOWN").toString().toUpperCase();
 
-  if (override) {
-    if (override.tier) tierU = override.tier;
-    if (override.active !== undefined) observedActiveFinal = Boolean(override.active);
-  }
-
-  const overrideMeta =
-    override
-      ? {
-          testOverride: `YES (expires ${new Date(override.untilMs).toISOString()})`,
-          testOverrideKey: override.key,
-        }
-      : null;
-
-  const REDEMP_TIER_ORDER = ["LOW", "NEUTRAL", "MEDIUM", "HIGH", "UNKNOWN"];
+  const REDEMP_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 
   // pull prev state
-  const prev = getPrevState({ userId, walletId, contractId, tokenId });
+  const prev = getPrevState({ userId, walletId, contractId, tokenId, alertType });
   const prevActive = prev.isActive === 1;
 
   let prevObj = null;
@@ -927,6 +1032,8 @@ async function handleRedemptionAlert(data) {
 
   let cand = prevObj?.candidateStatus ? String(prevObj.candidateStatus) : null;
   let candSinceMs = Number(prevObj?.candidateSinceMs || 0) || 0;
+  let candTier = prevObj?.candidateTier ? String(prevObj.candidateTier) : null;
+  let candTierSinceMs = Number(prevObj?.candidateTierSinceMs || 0) || 0;
 
   const diff = typeof cdpIR === "number" && typeof globalIR === "number" ? cdpIR - globalIR : null;
 
@@ -959,13 +1066,47 @@ async function handleRedemptionAlert(data) {
             confirmedStatus: "OFF",
             candidateStatus: "ON",
             candidateSinceMs: candSinceMs,
+            candidateTier: null,
+            candidateTierSinceMs: 0,
             lastAlertAtMs,
             lastTier: prevTierU,
           },
           logPrefix: "[REDEMP]",
-          message: `Redemption pending debounce (${protocol}, wallet=${wallet}, tier=${tierU}, CDP_ACTIVE=${isCDPActive})`,
-          meta: { tier: tierU, cdpIR, globalIR, isCDPActive, ...(overrideMeta || {}) },
+          message: `Redemption pending debounce ${protocol}`,
+          meta: {
+            wallet: shortenAddress(wallet),
+            walletLabel,
+            troveId: shortenTroveId(tokenId),
+            prevTier: prevTierU,
+            newTier: tierU,
+            loanIR: cdpIR,
+            globalIR,
+          },
           alertType,
+        });
+        return;
+      }
+
+      if (!prev.exists) {
+        const signature = makeSignature(sigPayload);
+        upsertAlertState({
+          userId,
+          walletId,
+          contractId,
+          tokenId,
+          alertType,
+          isActive: true,
+          signature,
+          stateJson: JSON.stringify({
+            ...baseState,
+            confirmedStatus: "ON",
+            candidateStatus: null,
+            candidateSinceMs: 0,
+            candidateTier: null,
+            candidateTierSinceMs: 0,
+            lastAlertAtMs: nowMs,
+            lastTier: tierU,
+          }),
         });
         return;
       }
@@ -982,15 +1123,58 @@ async function handleRedemptionAlert(data) {
           confirmedStatus: "ON",
           candidateStatus: null,
           candidateSinceMs: 0,
+          candidateTier: null,
+          candidateTierSinceMs: 0,
           lastAlertAtMs: nowMs,
           lastTier: tierU,
         },
         logPrefix: "[REDEMP]",
-        message: `CDP redemption candidate (${protocol}, wallet=${wallet}, tier=${tierU}, CDP_ACTIVE=${isCDPActive})`,
-        meta: { tier: tierU, cdpIR, globalIR, isCDPActive, ...(overrideMeta || {}) },
+        message: `CDP redemption candidate ${protocol}`,
+        meta: {
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          troveId: shortenTroveId(tokenId),
+          prevTier: prevTierU,
+          newTier: tierU,
+          loanIR: cdpIR,
+          globalIR,
+        },
         alertType,
       });
       return;
+    }
+
+    const immediateCritical = tierU === "CRITICAL" && prevTierU !== "CRITICAL";
+
+    if (tierU !== prevTierU && !immediateCritical) {
+      if ((candTier || "").toUpperCase() !== tierU) {
+        candTier = tierU;
+        candTierSinceMs = nowMs;
+      }
+
+      const age = nowMs - candTierSinceMs;
+      if (age < LOAN_REDEMP_DEBOUNCE_MS) {
+        upsertAlertState({
+          userId,
+          walletId,
+          contractId,
+          tokenId,
+          alertType,
+          isActive: true,
+          signature: prev.signature,
+          stateJson: JSON.stringify({
+            ...baseState,
+            confirmedStatus: "ON",
+            candidateStatus: null,
+            candidateSinceMs: 0,
+            candidateTier: candTier,
+            candidateTierSinceMs: candTierSinceMs,
+            lastAlertAtMs,
+            lastTier: prevTierU,
+          }),
+        });
+        return;
+      }
     }
 
     const signature = makeSignature(sigPayload);
@@ -999,8 +1183,67 @@ async function handleRedemptionAlert(data) {
     const cooldownOk = nowMs - lastAlertAtMs >= LOAN_REDEMP_ALERT_COOLDOWN_MS;
     const escalated = isTierEscalation(prevTierU, tierU, REDEMP_TIER_ORDER);
 
-    const allowNotifyUpdate = wouldUpdate && (cooldownOk || escalated);
+    const tierChanged = prevTierU !== tierU;
+    const allowNotifyUpdate =
+      immediateCritical || (wouldUpdate && (cooldownOk || escalated) && tierChanged);
     const newLastAlertAtMs = allowNotifyUpdate ? nowMs : lastAlertAtMs;
+
+    if (!wouldUpdate) {
+      await processAlert({
+        userId,
+        walletId,
+        contractId,
+        tokenId,
+        isActive: true,
+        signaturePayload: sigPayload,
+        state: {
+          ...baseState,
+          confirmedStatus: "ON",
+          candidateStatus: null,
+          candidateSinceMs: 0,
+          candidateTier: null,
+          candidateTierSinceMs: 0,
+          lastAlertAtMs: newLastAlertAtMs,
+          lastTier: tierU,
+        },
+        logPrefix: "[REDEMP]",
+        message: `CDP redemption candidate ${protocol}`,
+        meta: {
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          troveId: shortenTroveId(tokenId),
+          prevTier: prevTierU,
+          newTier: tierU,
+          loanIR: cdpIR,
+          globalIR,
+        },
+        alertType,
+      });
+      return;
+    }
+
+    if (!allowNotifyUpdate) {
+      upsertAlertState({
+        userId,
+        walletId,
+        contractId,
+        tokenId,
+        alertType,
+        isActive: true,
+        signature,
+        stateJson: JSON.stringify({
+          ...baseState,
+          confirmedStatus: "ON",
+          candidateStatus: null,
+          candidateSinceMs: 0,
+          candidateTier: null,
+          candidateTierSinceMs: 0,
+          lastAlertAtMs: newLastAlertAtMs,
+          lastTier: tierU,
+        }),
+      });
+      return;
+    }
 
     await processAlert({
       userId,
@@ -1014,12 +1257,22 @@ async function handleRedemptionAlert(data) {
         confirmedStatus: "ON",
         candidateStatus: null,
         candidateSinceMs: 0,
+        candidateTier: null,
+        candidateTierSinceMs: 0,
         lastAlertAtMs: newLastAlertAtMs,
         lastTier: tierU,
       },
       logPrefix: "[REDEMP]",
-      message: `CDP redemption candidate (${protocol}, wallet=${wallet}, tier=${tierU}, CDP_ACTIVE=${isCDPActive})`,
-      meta: { tier: tierU, cdpIR, globalIR, isCDPActive, ...(overrideMeta || {}) },
+      message: `CDP redemption candidate ${protocol}`,
+      meta: {
+        wallet: shortenAddress(wallet),
+            walletLabel,
+        troveId: shortenTroveId(tokenId),
+        prevTier: prevTierU,
+        newTier: tierU,
+        loanIR: cdpIR,
+        globalIR,
+      },
       alertType,
     });
     return;
@@ -1033,28 +1286,30 @@ async function handleRedemptionAlert(data) {
 
     const age = nowMs - candSinceMs;
     if (age < LOAN_REDEMP_RESOLVE_DEBOUNCE_MS) {
-      await processAlert({
+      upsertAlertState({
         userId,
         walletId,
         contractId,
         tokenId,
+        alertType,
         isActive: true,
-        signaturePayload: { keep: true },
-        state: {
+        signature: prev.signature,
+        stateJson: JSON.stringify({
           ...baseState,
           confirmedStatus: "ON",
           candidateStatus: "OFF",
           candidateSinceMs: candSinceMs,
+          candidateTier: null,
+          candidateTierSinceMs: 0,
           lastAlertAtMs,
           lastTier: prevTierU,
-        },
-        logPrefix: "[REDEMP]",
-        message: `Redemption pending resolve debounce (${protocol}, wallet=${wallet})`,
-        meta: { tier: tierU, cdpIR, globalIR, isCDPActive, ...(overrideMeta || {}) },
-        alertType,
+        }),
       });
       return;
     }
+
+    const cooldownOk = nowMs - lastAlertAtMs >= LOAN_REDEMP_ALERT_COOLDOWN_MS;
+    const allowResolveNotify = cooldownOk && Number.isFinite(globalIR);
 
     await processAlert({
       userId,
@@ -1068,14 +1323,24 @@ async function handleRedemptionAlert(data) {
         confirmedStatus: "OFF",
         candidateStatus: null,
         candidateSinceMs: 0,
+        candidateTier: null,
+        candidateTierSinceMs: 0,
         lastAlertAtMs,
         lastTier: prevTierU,
       },
       logPrefix: "[REDEMP]",
-      message: `CDP redemption no longer favored (${protocol}, wallet=${wallet}, CDP_ACTIVE=${isCDPActive})`,
-      meta: { tier: tierU, cdpIR, globalIR, isCDPActive, ...(overrideMeta || {}) },
+      message: `CDP redemption no longer economically attractive ${protocol}`,
+      meta: {
+        wallet: shortenAddress(wallet),
+            walletLabel,
+        troveId: shortenTroveId(tokenId),
+        prevTier: prevTierU,
+        newTier: tierU,
+        loanIR: cdpIR,
+        globalIR,
+      },
       alertType,
-      notifyOnResolved: false,
+      notifyOnResolved: allowResolveNotify,
     });
     return;
   }
@@ -1092,12 +1357,22 @@ async function handleRedemptionAlert(data) {
       confirmedStatus: "OFF",
       candidateStatus: null,
       candidateSinceMs: 0,
+      candidateTier: null,
+      candidateTierSinceMs: 0,
       lastAlertAtMs,
       lastTier: tierU,
     },
     logPrefix: "[REDEMP]",
-    message: `Redemption steady (${protocol}, wallet=${wallet})`,
-    meta: { tier: tierU, cdpIR, globalIR, isCDPActive, ...(overrideMeta || {}) },
+    message: `Redemption steady ${protocol}`,
+    meta: {
+      wallet: shortenAddress(wallet),
+            walletLabel,
+      troveId: shortenTroveId(tokenId),
+      prevTier: prevTierU,
+      newTier: tierU,
+      loanIR: cdpIR,
+      globalIR,
+    },
     alertType,
   });
 }
@@ -1120,6 +1395,7 @@ async function handleLpRangeAlert(data) {
     currentTick,
     protocol,
     wallet,
+    walletLabel,
   } = data;
 
   const tokenId = String(positionId);
@@ -1127,28 +1403,11 @@ async function handleLpRangeAlert(data) {
 
   const nowMs = Date.now();
 
-  // -----------------------------
-  // ✅ Apply Option A test override (LP) BEFORE debounce logic
-  // -----------------------------
-  const override = getTestOverrideLP(contractId, tokenId);
-
   let currStatus = normLpStatus(currentStatus);
   let tierU = (lpRangeTier || "UNKNOWN").toString().toUpperCase();
   let observedActiveFinal = Boolean(observedActive);
 
-  if (override) {
-    if (override.status) {
-      currStatus = override.status;
-      // If active not explicitly set, infer from status: OUT_OF_RANGE => active, else inactive.
-      if (override.active === undefined) {
-        observedActiveFinal = currStatus === "OUT_OF_RANGE";
-      }
-    }
-    if (override.tier) tierU = override.tier;
-    if (override.active !== undefined) observedActiveFinal = Boolean(override.active);
-  }
-
-  const prev = getPrevState({ userId, walletId, contractId, tokenId });
+  const prev = getPrevState({ userId, walletId, contractId, tokenId, alertType });
   const prevActive = prev.isActive === 1;
 
   let prevObj = null;
@@ -1163,14 +1422,6 @@ async function handleLpRangeAlert(data) {
 
   let candidateStatus = prevObj?.candidateStatus ? normLpStatus(prevObj.candidateStatus) : null;
   let candidateSinceMs = Number(prevObj?.candidateSinceMs || 0) || 0;
-
-  const overrideMeta =
-    override
-      ? {
-          testOverride: `YES (expires ${new Date(override.untilMs).toISOString()})`,
-          testOverrideKey: override.key,
-        }
-      : null;
 
   if (observedActiveFinal) {
     if (!prevActive) {
@@ -1188,8 +1439,30 @@ async function handleLpRangeAlert(data) {
         const signature = makeSignature(sigPayload);
         const wouldNotify = !prevActive || prev.signature !== signature;
 
-        const message = `LP is OUT OF RANGE (${protocol}, wallet=${wallet}, tier=${tierU})`;
+        const message = `LP is OUT OF RANGE ${protocol}`;
         const newLastAlertAtMs = wouldNotify ? nowMs : lastAlertAtMs;
+
+        if (!prev.exists) {
+          upsertAlertState({
+            userId,
+            walletId,
+            contractId,
+            tokenId,
+            alertType,
+            isActive: true,
+            signature,
+            stateJson: JSON.stringify({
+              kind: "LP",
+              rangeStatus: "OUT_OF_RANGE",
+              confirmedStatus: "OUT_OF_RANGE",
+              candidateStatus: null,
+              candidateSinceMs: 0,
+              lastAlertAtMs: newLastAlertAtMs,
+              lastTier: tierU,
+            }),
+          });
+          return;
+        }
 
         await processAlert({
           userId,
@@ -1206,20 +1479,18 @@ async function handleLpRangeAlert(data) {
             candidateSinceMs: 0,
             lastAlertAtMs: newLastAlertAtMs,
             lastTier: tierU,
-            tickLower,
-            tickUpper,
-            currentTick,
           },
           logPrefix: "[LP]",
           message,
           meta: {
+            positionId: shortenTroveId(tokenId),
+            wallet: shortenAddress(wallet),
+            walletLabel,
             prevStatus,
             currentStatus: "OUT_OF_RANGE",
+            prevTier: prevTierU,
+            newTier: tierU,
             lpRangeTier: tierU,
-            tickLower,
-            tickUpper,
-            currentTick,
-            ...(overrideMeta || {}),
           },
           alertType,
           notifyOnResolved: true,
@@ -1243,17 +1514,18 @@ async function handleLpRangeAlert(data) {
           candidateSinceMs,
           lastAlertAtMs,
           lastTier: prevTierU,
-          tickLower,
-          tickUpper,
-          currentTick,
         },
         logPrefix: "[LP]",
-        message: `LP pending OUT_OF_RANGE debounce (${protocol}, wallet=${wallet})`,
+        message: `LP pending OUT_OF_RANGE debounce ${protocol}`,
         meta: {
+          positionId: shortenTroveId(tokenId),
+          wallet: shortenAddress(wallet),
+            walletLabel,
           prevStatus,
           currentStatus: currStatus,
+          prevTier: prevTierU,
+          newTier: tierU,
           lpRangeTier: tierU,
-          ...(overrideMeta || {}),
         },
         alertType,
         notifyOnResolved: true,
@@ -1273,10 +1545,70 @@ async function handleLpRangeAlert(data) {
     const escalated = isTierEscalation(prevTierU, tierU, LP_TIER_ORDER);
 
     const cooldownOk = nowMs - lastAlertAtMs >= LP_ALERT_COOLDOWN_MS;
-    const allowUpdateNotify = wouldNotify && (cooldownOk || escalated);
+    const tierChanged = prevTierU !== tierU;
+    const statusChanged = prevObj?.confirmedStatus && prevObj.confirmedStatus !== "OUT_OF_RANGE";
+    const allowUpdateNotify =
+      wouldNotify && (cooldownOk || escalated) && (tierChanged || statusChanged);
 
-    const message = `LP is OUT OF RANGE (${protocol}, wallet=${wallet}, tier=${tierU})`;
+    const message = `LP is OUT OF RANGE ${protocol}`;
     const newLastAlertAtMs = allowUpdateNotify ? nowMs : lastAlertAtMs;
+
+    if (!wouldNotify) {
+      await processAlert({
+        userId,
+        walletId,
+        contractId,
+        tokenId,
+        isActive: true,
+        signaturePayload: sigPayload,
+        state: {
+          kind: "LP",
+          rangeStatus: "OUT_OF_RANGE",
+          confirmedStatus: "OUT_OF_RANGE",
+          candidateStatus: null,
+          candidateSinceMs: 0,
+          lastAlertAtMs: newLastAlertAtMs,
+          lastTier: tierU,
+        },
+        logPrefix: "[LP]",
+        message,
+        meta: {
+          positionId: shortenTroveId(tokenId),
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          prevStatus,
+          currentStatus: "OUT_OF_RANGE",
+          prevTier: prevTierU,
+          newTier: tierU,
+          lpRangeTier: tierU,
+        },
+        alertType,
+        notifyOnResolved: true,
+      });
+      return;
+    }
+
+    if (!allowUpdateNotify) {
+      upsertAlertState({
+        userId,
+        walletId,
+        contractId,
+        tokenId,
+        alertType,
+        isActive: true,
+        signature,
+        stateJson: JSON.stringify({
+          kind: "LP",
+          rangeStatus: "OUT_OF_RANGE",
+          confirmedStatus: "OUT_OF_RANGE",
+          candidateStatus: null,
+          candidateSinceMs: 0,
+          lastAlertAtMs: newLastAlertAtMs,
+          lastTier: tierU,
+        }),
+      });
+      return;
+    }
 
     await processAlert({
       userId,
@@ -1293,20 +1625,18 @@ async function handleLpRangeAlert(data) {
         candidateSinceMs: 0,
         lastAlertAtMs: newLastAlertAtMs,
         lastTier: tierU,
-        tickLower,
-        tickUpper,
-        currentTick,
       },
       logPrefix: "[LP]",
       message,
-      meta: {
-        prevStatus,
-        currentStatus: "OUT_OF_RANGE",
+        meta: {
+          positionId: shortenTroveId(tokenId),
+          wallet: shortenAddress(wallet),
+            walletLabel,
+          prevStatus,
+          currentStatus: "OUT_OF_RANGE",
+        prevTier: prevTierU,
+        newTier: tierU,
         lpRangeTier: tierU,
-        tickLower,
-        tickUpper,
-        currentTick,
-        ...(overrideMeta || {}),
       },
       alertType,
       notifyOnResolved: true,
@@ -1328,9 +1658,7 @@ async function handleLpRangeAlert(data) {
       const cooldownOk = nowMs - lastAlertAtMs >= LP_ALERT_COOLDOWN_MS;
 
       const message =
-        desired === "INACTIVE"
-          ? `LP is now INACTIVE (${protocol}, wallet=${wallet})`
-          : `LP is back IN RANGE (${protocol}, wallet=${wallet})`;
+        desired === "INACTIVE" ? `LP is now INACTIVE ${protocol}` : `LP is back IN RANGE ${protocol}`;
 
       await processAlert({
         userId,
@@ -1347,20 +1675,18 @@ async function handleLpRangeAlert(data) {
           candidateSinceMs: 0,
           lastAlertAtMs,
           lastTier: prevTierU,
-          tickLower,
-          tickUpper,
-          currentTick,
         },
         logPrefix: "[LP]",
         message,
         meta: {
+          positionId: shortenTroveId(tokenId),
+          wallet: shortenAddress(wallet),
+            walletLabel,
           prevStatus,
           currentStatus: currStatus,
+          prevTier: prevTierU,
+          newTier: tierU,
           lpRangeTier: tierU,
-          tickLower,
-          tickUpper,
-          currentTick,
-          ...(overrideMeta || {}),
         },
         alertType,
         notifyOnResolved: cooldownOk,
@@ -1387,17 +1713,18 @@ async function handleLpRangeAlert(data) {
         candidateSinceMs,
         lastAlertAtMs,
         lastTier: prevTierU,
-        tickLower,
-        tickUpper,
-        currentTick,
       },
       logPrefix: "[LP]",
-      message: `LP pending IN_RANGE debounce (${protocol}, wallet=${wallet})`,
+      message: `LP pending IN_RANGE debounce ${protocol}`,
       meta: {
+        positionId: shortenTroveId(tokenId),
+        wallet: shortenAddress(wallet),
+            walletLabel,
         prevStatus,
         currentStatus: currStatus,
+        prevTier: prevTierU,
+        newTier: tierU,
         lpRangeTier: tierU,
-        ...(overrideMeta || {}),
       },
       alertType,
       notifyOnResolved: true,
@@ -1421,17 +1748,18 @@ async function handleLpRangeAlert(data) {
       candidateSinceMs: 0,
       lastAlertAtMs,
       lastTier: tierU,
-      tickLower,
-      tickUpper,
-      currentTick,
     },
     logPrefix: "[LP]",
-    message: `LP steady (${protocol}, wallet=${wallet})`,
+    message: `LP steady ${protocol}`,
     meta: {
+      positionId: shortenTroveId(tokenId),
+      wallet: shortenAddress(wallet),
+            walletLabel,
       prevStatus,
       currentStatus: currStatus,
+      prevTier: prevTierU,
+      newTier: tierU,
       lpRangeTier: tierU,
-      ...(overrideMeta || {}),
     },
     alertType,
     notifyOnResolved: true,

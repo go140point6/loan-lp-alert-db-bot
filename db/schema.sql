@@ -314,6 +314,7 @@ CREATE TABLE alert_state (
 
   contract_id   INTEGER NOT NULL,
   token_id      TEXT NOT NULL,
+  alert_type    TEXT NOT NULL,
 
   is_active     INTEGER NOT NULL DEFAULT 0 CHECK (is_active IN (0,1)),
   signature     TEXT,
@@ -327,14 +328,14 @@ CREATE TABLE alert_state (
   FOREIGN KEY (wallet_id)   REFERENCES user_wallets(id)  ON DELETE CASCADE,
   FOREIGN KEY (contract_id) REFERENCES contracts(id)     ON DELETE CASCADE,
 
-  UNIQUE (user_id, wallet_id, contract_id, token_id)
+  UNIQUE (user_id, wallet_id, contract_id, token_id, alert_type)
 );
 
 CREATE INDEX idx_alert_state_user_active
   ON alert_state(user_id, is_active);
 
 CREATE INDEX idx_alert_state_position
-  ON alert_state(wallet_id, contract_id, token_id);
+  ON alert_state(wallet_id, contract_id, token_id, alert_type);
 
 -- =========================================================
 -- ALERT LOG
@@ -366,18 +367,6 @@ CREATE INDEX idx_alert_log_user_created
 
 CREATE INDEX idx_alert_log_position
   ON alert_log(wallet_id, contract_id, token_id);
-
--- =========================================================
--- TEST OVERRIDES
--- =========================================================
-CREATE TABLE IF NOT EXISTS test_overrides (
-  kind        TEXT NOT NULL,              -- 'LP' | 'LIQ' | 'REDEMP'
-  contract_id INTEGER NOT NULL,
-  token_id    TEXT NOT NULL,
-  value_text  TEXT NOT NULL,              -- JSON payload
-  fetched_at  TEXT NOT NULL DEFAULT (datetime('now')),
-  PRIMARY KEY (kind, contract_id, token_id)
-);
 
 -- =========================================================
 -- UPDATED_AT TRIGGERS
