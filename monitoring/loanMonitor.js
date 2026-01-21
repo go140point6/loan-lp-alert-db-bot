@@ -75,7 +75,6 @@ const GLOBAL_IR_BRANCHES = requireEnv("GLOBAL_IR_BRANCHES")
 const LIQ_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 const REDEMP_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 
-const LIQ_ALERT_MIN_TIER = requireEnv("LIQ_ALERT_MIN_TIER");
 
 // -----------------------------
 // Helpers
@@ -554,7 +553,7 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
 
   // Liquidation alert (DB-stable identity)
   const liqTierFinal = liqClass.tier;
-  const liqIsActiveFinal = isTierAtLeast(liqTierFinal, LIQ_ALERT_MIN_TIER, LIQ_TIER_ORDER);
+  const liqIsActiveFinal = liqTierFinal !== "UNKNOWN";
 
   await handleLiquidationAlert({
     userId,
@@ -565,6 +564,8 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
     protocol,
     wallet: owner,
     walletLabel,
+    walletAddress: owner,
+    chainId,
 
     isActive: liqIsActiveFinal,
     tier: liqTierFinal,
@@ -590,6 +591,8 @@ async function describeLoanPosition(provider, chainId, protocol, row, { cdpState
     protocol,
     wallet: owner,
     walletLabel,
+    walletAddress: owner,
+    chainId,
 
     isActive: redIsActiveFinal,
     tier: redTierFinal,

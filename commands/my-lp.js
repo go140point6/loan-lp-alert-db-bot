@@ -15,6 +15,8 @@ function chunk(arr, size) {
 
 const { createDecimalFormatter } = require("../utils/intlNumberFormats");
 const { formatBandRuler } = require("../monitoring/lpMonitor");
+const { formatLpPositionLink } = require("../utils/links");
+const { shortenTroveId } = require("../utils/ethers/shortenTroveId");
 
 // 4 decimals, thousands separators
 const fmt4 = createDecimalFormatter(0, 4);
@@ -93,7 +95,9 @@ module.exports = {
       };
 
       const fields = summaries.map((s) => {
-        const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"}) - ${s.tokenId}`;
+        const tokenLabel = shortenTroveId(s.tokenId);
+        const tokenLink = formatLpPositionLink(s.protocol, s.tokenId, tokenLabel);
+        const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"})`;
         const valueLines = [];
 
         const sym0 = s.token0Symbol || s.token0 || "?";
@@ -101,6 +105,7 @@ module.exports = {
 
         if (s.pairLabel) valueLines.push(`Pair: **${s.pairLabel}**`);
         else if (sym0 && sym1) valueLines.push(`Pair: **${sym0} - ${sym1}**`);
+        valueLines.push(`Token: ${tokenLink}`);
 
         // ---- NEW: principal amounts
         const a0 = fmtNum(s.amount0, 6);

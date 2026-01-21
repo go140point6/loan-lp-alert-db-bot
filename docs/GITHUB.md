@@ -58,6 +58,12 @@ git checkout dev
 git fetch origin
 git merge origin/main
 git push origin dev
+
+or
+
+one-time add: git config --global alias.sync-dev '!git checkout dev && git fetch origin && git merge --no-edit origin/main && git push origin dev'
+
+then git sync-dev
 ```
 
 This keeps:

@@ -6,6 +6,7 @@ const { prepareQueries } = require("../db/queries");
 const { ensureDmOnboarding } = require("../utils/discord/dm");
 const { ephemeralFlags } = require("../utils/discord/ephemerals");
 const { createDecimalFormatter } = require("../utils/intlNumberFormats");
+const { formatLoanTroveLink } = require("../utils/links");
 const logger = require("../utils/logger");
 
 function chunk(arr, size) {
@@ -109,9 +110,12 @@ module.exports = {
 
       const fields = summaries.map((s) => {
         const rawId = s.troveId ?? s.tokenId ?? s.positionId ?? "?";
-        const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"}) — ${shortId(rawId)}`;
+        const idLabel = shortId(rawId);
+        const idLink = formatLoanTroveLink(s.protocol, rawId, idLabel);
+        const header = `${s.protocol || "UNKNOWN_PROTOCOL"} (${s.chainId || "?"})`;
 
         const valueLines = [];
+        valueLines.push(`Trove: ${idLink}`);
 
         valueLines.push(`Status: **${s.status || "UNKNOWN"}**`);
 

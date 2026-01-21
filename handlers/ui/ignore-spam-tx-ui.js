@@ -15,6 +15,8 @@ const { getDb, getOrCreateUserId } = require("../../db");
 const { prepareQueries } = require("../../db/queries");
 const { ephemeralFlags } = require("../../utils/discord/ephemerals");
 const { shortenAddress } = require("../../utils/ethers/shortenAddress");
+const { shortenTroveId } = require("../../utils/ethers/shortenTroveId");
+const { formatAddressLink, formatLpPositionLink } = require("../../utils/links");
 
 // ===================== UI LOCK START =====================
 const IG_LOCK_TTL_MS = 2500;
@@ -207,7 +209,16 @@ function buildMainEmbed({ discordName, ignores }) {
     const wl = r.wallet_label ? `**${r.wallet_label}** ` : "";
     const idText = r.token_id == null ? "(ALL)" : String(r.token_id);
     const kind = kindLabelFromContractKind(r.kind);
-    return `• **${kind}** ${r.chain_id} **${r.protocol || "UNKNOWN"}** | ${wl}\`${shortenAddress(r.wallet_address)}\` | ID **${idText}**`;
+    const walletLink = formatAddressLink(r.chain_id, r.wallet_address);
+    let idDisplay = idText;
+    if (r.token_id != null && String(r.kind || "").toUpperCase().includes("LP")) {
+      idDisplay = formatLpPositionLink(
+        r.protocol,
+        r.token_id,
+        shortenTroveId(r.token_id)
+      );
+    }
+    return `• **${kind}** ${r.chain_id} **${r.protocol || "UNKNOWN"}** | ${wl}${walletLink} | ID **${idDisplay}**`;
   });
 
   embed.addFields({

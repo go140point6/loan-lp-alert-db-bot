@@ -16,6 +16,7 @@ const { getDb, getOrCreateUserId, getOrCreateWalletId } = require("../../db");
 const { prepareQueries } = require("../../db/queries");
 const { ephemeralFlags } = require("../../utils/discord/ephemerals");
 const { shortenAddress } = require("../../utils/ethers/shortenAddress");
+const { formatAddressLink } = require("../../utils/links");
 
 // ===================== UI LOCK START =====================
 // One in-flight mw action per user. Everything else is ACKed and ignored.
@@ -76,7 +77,8 @@ function buildWalletsEmbed({ discordName, wallets }) {
   for (const [chain, list] of byChain.entries()) {
     const lines = list.map((w) => {
       const label = w.label ? `**${w.label}** ` : "";
-      return `• ${label}\`${shortenAddress(w.address_eip55)}\``;
+      const walletLink = formatAddressLink(w.chain_id, w.address_eip55);
+      return `• ${label}${walletLink}`;
     });
     embed.addFields({ name: chain, value: lines.join("\n"), inline: false });
   }
