@@ -4,6 +4,13 @@ All notable, user-facing changes are documented here.
 
 ---
 
+## [2026-01-21]
+
+### Changed
+- Loan and LP alerts now use a consistent improving/worsening format with clear tier markers and human-friendly meaning lines.
+- Wallets and positions are now clickable links to explorers and DEX position pages across alerts, commands, and heartbeat summaries.
+- Daily heartbeat entries now mirror command layouts (token/trove link first, then principal/fees/status/tier).
+
 ## [2026-01-20]
 
 ### Changed

@@ -8,6 +8,7 @@ const { sendLongDM } = require("../utils/discord/sendLongDM");
 const logger = require("../utils/logger");
 const { shortenAddress } = require("../utils/ethers/shortenAddress");
 const { shortenTroveId } = require("../utils/ethers/shortenTroveId");
+const { formatAddressLink, formatLpPositionLink, formatLoanTroveLink } = require("../utils/links");
 
 function trendLabel(prevTier, newTier, order) {
   const p = (prevTier || "").toString().toUpperCase();
@@ -17,6 +18,22 @@ function trendLabel(prevTier, newTier, order) {
   if (pi === -1 || ni === -1 || pi === ni) return { emoji: "⚪", label: "Steady" };
   if (ni < pi) return { emoji: "🟢", label: "Improving" };
   return { emoji: "🔴", label: "Worsening" };
+}
+
+function formatTierList(currentTier) {
+  const tierEmoji = (t) =>
+    ({
+      CRITICAL: "🟥",
+      HIGH: "🟧",
+      MEDIUM: "🟨",
+      LOW: "🟩",
+      UNKNOWN: "⬜",
+    }[t] || "⬜");
+  const order = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
+  const tierU = (currentTier || "UNKNOWN").toString().toUpperCase();
+  return order
+    .map((t) => `${tierEmoji(t)} ${t}${t === tierU ? " ◀" : ""}`)
+    .join("\n");
 }
 
 let _client = null;
@@ -50,43 +67,37 @@ function requireNumberEnv(name) {
 // -----------------------------
 // LP debounce/cooldown config (STRICT)
 // -----------------------------
-const LP_OOR_DEBOUNCE_SEC = requireNumberEnv("LP_OOR_DEBOUNCE_SEC");
-const LP_IN_DEBOUNCE_SEC = requireNumberEnv("LP_IN_DEBOUNCE_SEC");
-const LP_ALERT_COOLDOWN_SEC = requireNumberEnv("LP_ALERT_COOLDOWN_SEC");
+const LP_WORSENING_DEBOUNCE_SEC = requireNumberEnv("LP_WORSENING_DEBOUNCE_SEC");
+const LP_IMPROVING_DEBOUNCE_SEC = requireNumberEnv("LP_IMPROVING_DEBOUNCE_SEC");
 
-const LP_OOR_DEBOUNCE_MS = Math.max(0, Math.floor(LP_OOR_DEBOUNCE_SEC * 1000));
-const LP_IN_DEBOUNCE_MS = Math.max(0, Math.floor(LP_IN_DEBOUNCE_SEC * 1000));
-const LP_ALERT_COOLDOWN_MS = Math.max(0, Math.floor(LP_ALERT_COOLDOWN_SEC * 1000));
+const LP_WORSENING_DEBOUNCE_MS = Math.max(0, Math.floor(LP_WORSENING_DEBOUNCE_SEC * 1000));
+const LP_IMPROVING_DEBOUNCE_MS = Math.max(0, Math.floor(LP_IMPROVING_DEBOUNCE_SEC * 1000));
 
 // -----------------------------
 // LOAN debounce/cooldown config (STRICT)
 // -----------------------------
-const LOAN_LIQ_DEBOUNCE_SEC = requireNumberEnv("LOAN_LIQ_DEBOUNCE_SEC");
-const LOAN_LIQ_RESOLVE_DEBOUNCE_SEC = requireNumberEnv("LOAN_LIQ_RESOLVE_DEBOUNCE_SEC");
-const LOAN_LIQ_ALERT_COOLDOWN_SEC = requireNumberEnv("LOAN_LIQ_ALERT_COOLDOWN_SEC");
+const LOAN_LIQ_WORSENING_DEBOUNCE_SEC = requireNumberEnv("LOAN_LIQ_WORSENING_DEBOUNCE_SEC");
+const LOAN_LIQ_IMPROVING_DEBOUNCE_SEC = requireNumberEnv("LOAN_LIQ_IMPROVING_DEBOUNCE_SEC");
 
-const LOAN_REDEMP_DEBOUNCE_SEC = requireNumberEnv("LOAN_REDEMP_DEBOUNCE_SEC");
-const LOAN_REDEMP_RESOLVE_DEBOUNCE_SEC = requireNumberEnv("LOAN_REDEMP_RESOLVE_DEBOUNCE_SEC");
-const LOAN_REDEMP_ALERT_COOLDOWN_SEC = requireNumberEnv("LOAN_REDEMP_ALERT_COOLDOWN_SEC");
+const LOAN_REDEMP_WORSENING_DEBOUNCE_SEC = requireNumberEnv("LOAN_REDEMP_WORSENING_DEBOUNCE_SEC");
+const LOAN_REDEMP_IMPROVING_DEBOUNCE_SEC = requireNumberEnv("LOAN_REDEMP_IMPROVING_DEBOUNCE_SEC");
 
-const LOAN_LIQ_DEBOUNCE_MS = Math.max(0, Math.floor(LOAN_LIQ_DEBOUNCE_SEC * 1000));
-const LOAN_LIQ_RESOLVE_DEBOUNCE_MS = Math.max(
+const LOAN_LIQ_WORSENING_DEBOUNCE_MS = Math.max(
   0,
-  Math.floor(LOAN_LIQ_RESOLVE_DEBOUNCE_SEC * 1000)
+  Math.floor(LOAN_LIQ_WORSENING_DEBOUNCE_SEC * 1000)
 );
-const LOAN_LIQ_ALERT_COOLDOWN_MS = Math.max(
+const LOAN_LIQ_IMPROVING_DEBOUNCE_MS = Math.max(
   0,
-  Math.floor(LOAN_LIQ_ALERT_COOLDOWN_SEC * 1000)
+  Math.floor(LOAN_LIQ_IMPROVING_DEBOUNCE_SEC * 1000)
 );
 
-const LOAN_REDEMP_DEBOUNCE_MS = Math.max(0, Math.floor(LOAN_REDEMP_DEBOUNCE_SEC * 1000));
-const LOAN_REDEMP_RESOLVE_DEBOUNCE_MS = Math.max(
+const LOAN_REDEMP_WORSENING_DEBOUNCE_MS = Math.max(
   0,
-  Math.floor(LOAN_REDEMP_RESOLVE_DEBOUNCE_SEC * 1000)
+  Math.floor(LOAN_REDEMP_WORSENING_DEBOUNCE_SEC * 1000)
 );
-const LOAN_REDEMP_ALERT_COOLDOWN_MS = Math.max(
+const LOAN_REDEMP_IMPROVING_DEBOUNCE_MS = Math.max(
   0,
-  Math.floor(LOAN_REDEMP_ALERT_COOLDOWN_SEC * 1000)
+  Math.floor(LOAN_REDEMP_IMPROVING_DEBOUNCE_SEC * 1000)
 );
 
 // -----------------------------
@@ -202,36 +213,67 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
 
   try {
     if (alertType === "REDEMPTION") {
+      if (phase === "NEW" || phase === "RESOLVED") return;
       const fmt2 = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "n/a");
       const prevTier = meta?.prevTier || "UNKNOWN";
       const newTier = meta?.newTier || "UNKNOWN";
       const trend = trendLabel(prevTier, newTier, ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]);
-      const phaseTag =
-        phase === "UPDATED"
-          ? ` ${trend.emoji} ${trend.label}`
-          : phase === "NEW"
-          ? " ⚠️"
-          : phase === "RESOLVED"
-          ? " ✅"
-          : "";
+      const deltaIr =
+        typeof meta?.loanIR === "number" && typeof meta?.globalIR === "number"
+          ? meta.loanIR - meta.globalIR
+          : null;
+      const deltaText =
+        deltaIr == null || !Number.isFinite(deltaIr)
+          ? "n/a"
+          : `Δ ${deltaIr >= 0 ? "+" : ""}${deltaIr.toFixed(2)} pp`;
+      const headline =
+        trend.label === "Improving"
+          ? { text: "Improving", emoji: "🟢" }
+          : trend.label === "Worsening"
+          ? { text: "Worsening", emoji: "🔴" }
+          : { text: "Updated", emoji: "⚪" };
+      const alertColor =
+        headline.text === "Improving"
+          ? "Green"
+          : headline.text === "Worsening"
+          ? "Red"
+          : "Grey";
 
       const embed = new EmbedBuilder()
-        .setTitle(`Redemption Alert (${phase}${phaseTag})`)
+        .setTitle(`Redemption Alert - ${headline.text} ${headline.emoji}`)
         .setDescription(message)
-        .setColor(phase === "RESOLVED" ? "DarkGrey" : phase === "UPDATED" ? "Orange" : "Red")
+        .setColor(alertColor)
         .setTimestamp();
 
       if (client.user) embed.setThumbnail(client.user.displayAvatarURL());
 
+      const walletText = meta?.walletAddress
+        ? formatAddressLink(meta.chainId, meta.walletAddress)
+        : meta?.wallet || "n/a";
+      const troveText =
+        meta?.troveId && meta?.protocol
+          ? formatLoanTroveLink(meta.protocol, meta.troveId, meta.troveId)
+          : meta?.troveId || "n/a";
       const fields = [
-        { name: "Trove", value: meta?.troveId || "n/a", inline: true },
-        { name: "Wallet", value: meta?.wallet || "n/a", inline: true },
+        { name: "Trove", value: troveText, inline: true },
+        { name: "Wallet", value: walletText, inline: true },
       ];
       if (meta?.walletLabel) fields.push({ name: "Label", value: meta.walletLabel, inline: true });
       fields.push(
-        { name: "Tier", value: `${prevTier} -> ${newTier}`, inline: false },
         { name: "Loan IR", value: `${fmt2(meta?.loanIR)}%`, inline: true },
-        { name: "Global IR", value: `${fmt2(meta?.globalIR)}%`, inline: true }
+        { name: "Global IR", value: `${fmt2(meta?.globalIR)}%`, inline: true },
+        { name: "Delta IR", value: deltaText, inline: true },
+        { name: "Tier", value: formatTierList(newTier), inline: false },
+        {
+          name: "Meaning",
+          value:
+            trend.label === "Improving"
+              ? "Your loan is less likely to be redeemed."
+              : trend.label === "Worsening"
+              ? "Your loan is closer to being redeemed."
+              : "Redemption risk unchanged.",
+          inline: false,
+        }
       );
       embed.addFields(fields);
 
@@ -240,44 +282,66 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
     }
 
     if (alertType === "LIQUIDATION") {
+      if (phase === "NEW" || phase === "RESOLVED") return;
       const fmt2 = (v) => (typeof v === "number" && Number.isFinite(v) ? v.toFixed(2) : "n/a");
       const prevTier = meta?.prevTier || "UNKNOWN";
       const newTier = meta?.newTier || "UNKNOWN";
       const trend = trendLabel(prevTier, newTier, ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"]);
-      const phaseTag =
-        phase === "UPDATED"
-          ? ` ${trend.emoji} ${trend.label}`
-          : phase === "NEW"
-          ? " ⚠️"
-          : phase === "RESOLVED"
-          ? " ✅"
-          : "";
+      const headline =
+        trend.label === "Improving"
+          ? { text: "Improving", emoji: "🟢" }
+          : trend.label === "Worsening"
+          ? { text: "Worsening", emoji: "🔴" }
+          : { text: "Updated", emoji: "⚪" };
+      const alertColor =
+        headline.text === "Improving"
+          ? "Green"
+          : headline.text === "Worsening"
+          ? "Red"
+          : "Grey";
       const bufferPct =
         typeof meta?.liquidationBufferFrac === "number" && Number.isFinite(meta?.liquidationBufferFrac)
           ? `${(meta.liquidationBufferFrac * 100).toFixed(2)}%`
           : "n/a";
 
       const embed = new EmbedBuilder()
-        .setTitle(`Liquidation Alert (${phase}${phaseTag})`)
+        .setTitle(`Liquidation Alert - ${headline.text} ${headline.emoji}`)
         .setDescription(message)
-        .setColor(phase === "RESOLVED" ? "DarkGrey" : phase === "UPDATED" ? "Orange" : "Red")
+        .setColor(alertColor)
         .setTimestamp();
 
       if (client.user) embed.setThumbnail(client.user.displayAvatarURL());
 
+      const walletText = meta?.walletAddress
+        ? formatAddressLink(meta.chainId, meta.walletAddress)
+        : meta?.wallet || "n/a";
+      const troveText =
+        meta?.troveId && meta?.protocol
+          ? formatLoanTroveLink(meta.protocol, meta.troveId, meta.troveId)
+          : meta?.troveId || "n/a";
       const fields = [
-        { name: "Trove", value: meta?.troveId || "n/a", inline: true },
-        { name: "Wallet", value: meta?.wallet || "n/a", inline: true },
+        { name: "Trove", value: troveText, inline: true },
+        { name: "Wallet", value: walletText, inline: true },
       ];
       if (meta?.walletLabel) fields.push({ name: "Label", value: meta.walletLabel, inline: true });
       fields.push(
-        { name: "Tier", value: `${prevTier} -> ${newTier}`, inline: false },
         { name: "LTV", value: `${fmt2(meta?.ltvPct)}%`, inline: true },
         { name: "Buffer", value: bufferPct, inline: true },
         {
           name: "Price / Liq",
           value: `${fmt2(meta?.currentPrice)} / ${fmt2(meta?.liquidationPrice)}`,
           inline: true,
+        },
+        { name: "Tier", value: formatTierList(newTier), inline: false },
+        {
+          name: "Meaning",
+          value:
+            trend.label === "Improving"
+              ? "Your loan is less likely to be liquidated."
+              : trend.label === "Worsening"
+              ? "Your loan is closer to being liquidated."
+              : "Liquidation risk unchanged.",
+          inline: false,
         }
       );
       embed.addFields(fields);
@@ -407,9 +471,19 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
 
       if (client.user) embed.setThumbnail(client.user.displayAvatarURL());
 
+      const walletText = meta?.walletAddress
+        ? formatAddressLink(meta.chainId, meta.walletAddress)
+        : meta?.wallet || "n/a";
       const fields = [
-        { name: "Position", value: meta?.positionId || "n/a", inline: true },
-        { name: "Wallet", value: meta?.wallet || "n/a", inline: true },
+        {
+          name: "Position",
+          value:
+            meta?.positionId && meta?.protocol
+              ? formatLpPositionLink(meta.protocol, meta.positionId, meta.positionId)
+              : meta?.positionId || "n/a",
+          inline: true,
+        },
+        { name: "Wallet", value: walletText, inline: true },
       ];
       if (meta?.walletLabel) fields.push({ name: "Label", value: meta.walletLabel, inline: true });
       if (meta?.pairLabel) fields.push({ name: "Pair", value: meta.pairLabel, inline: true });
@@ -750,6 +824,7 @@ async function handleLiquidationAlert(data) {
     protocol,
     wallet,
     walletLabel,
+    chainId,
   } = data;
 
   const tokenId = String(positionId);
@@ -803,7 +878,7 @@ async function handleLiquidationAlert(data) {
       }
 
       const age = nowMs - candSinceMs;
-      if (age < LOAN_LIQ_DEBOUNCE_MS) {
+      if (age < LOAN_LIQ_WORSENING_DEBOUNCE_MS) {
         await processAlert({
           userId,
           walletId,
@@ -820,10 +895,13 @@ async function handleLiquidationAlert(data) {
             lastTier: prevTierU,
           },
           logPrefix: "[LIQ]",
-          message: `Loan pending liquidation debounce ${protocol}`,
+          message: `${protocol}`,
           meta: {
             wallet: shortenAddress(wallet),
             walletLabel,
+            walletAddress: wallet,
+            chainId,
+            protocol,
             troveId: shortenTroveId(tokenId),
             prevTier: prevTierU,
             newTier: tierU,
@@ -875,10 +953,13 @@ async function handleLiquidationAlert(data) {
           lastTier: tierU,
         },
         logPrefix: "[LIQ]",
-        message: `Loan at risk of liquidation ${protocol}`,
+        message: `${protocol}`,
         meta: {
           wallet: shortenAddress(wallet),
-            walletLabel,
+          walletLabel,
+          walletAddress: wallet,
+          chainId,
+          protocol,
           troveId: shortenTroveId(tokenId),
           prevTier: prevTierU,
           newTier: tierU,
@@ -896,7 +977,7 @@ async function handleLiquidationAlert(data) {
     const signature = makeSignature(sigPayload);
     const wouldUpdate = prev.signature !== signature;
 
-    const cooldownOk = nowMs - lastAlertAtMs >= LOAN_LIQ_ALERT_COOLDOWN_MS;
+    const cooldownOk = true;
     const escalated = isTierEscalation(prevTierU, tierU, LIQ_TIER_ORDER);
 
     const tierChanged = prevTierU !== tierU;
@@ -920,10 +1001,13 @@ async function handleLiquidationAlert(data) {
           lastTier: tierU,
         },
         logPrefix: "[LIQ]",
-        message: `Loan at risk of liquidation ${protocol}`,
+        message: `${protocol}`,
         meta: {
-          wallet: shortenAddress(wallet),
-            walletLabel,
+        wallet: shortenAddress(wallet),
+        walletLabel,
+        walletAddress: wallet,
+        chainId,
+        protocol,
           troveId: shortenTroveId(tokenId),
           prevTier: prevTierU,
           newTier: tierU,
@@ -974,10 +1058,13 @@ async function handleLiquidationAlert(data) {
         lastTier: tierU,
       },
       logPrefix: "[LIQ]",
-      message: `Loan at risk of liquidation ${protocol}`,
+      message: `${protocol}`,
       meta: {
         wallet: shortenAddress(wallet),
-            walletLabel,
+        walletLabel,
+        walletAddress: wallet,
+        chainId,
+        protocol,
         troveId: shortenTroveId(tokenId),
         prevTier: prevTierU,
         newTier: tierU,
@@ -1000,7 +1087,7 @@ async function handleLiquidationAlert(data) {
     }
 
     const age = nowMs - candSinceMs;
-    if (age < LOAN_LIQ_RESOLVE_DEBOUNCE_MS) {
+    if (age < LOAN_LIQ_IMPROVING_DEBOUNCE_MS) {
       await processAlert({
         userId,
         walletId,
@@ -1017,10 +1104,13 @@ async function handleLiquidationAlert(data) {
           lastTier: prevTierU,
         },
         logPrefix: "[LIQ]",
-        message: `Loan pending liquidation resolve debounce ${protocol}`,
+        message: `${protocol}`,
         meta: {
           wallet: shortenAddress(wallet),
-            walletLabel,
+          walletLabel,
+          walletAddress: wallet,
+          chainId,
+          protocol,
           troveId: shortenTroveId(tokenId),
           prevTier: prevTierU,
           newTier: tierU,
@@ -1050,10 +1140,13 @@ async function handleLiquidationAlert(data) {
         lastTier: prevTierU,
       },
       logPrefix: "[LIQ]",
-      message: `Loan liquidation risk cleared ${protocol}`,
+      message: `${protocol}`,
       meta: {
         wallet: shortenAddress(wallet),
-            walletLabel,
+        walletLabel,
+        walletAddress: wallet,
+        chainId,
+        protocol,
         troveId: shortenTroveId(tokenId),
         prevTier: prevTierU,
         newTier: tierU,
@@ -1084,10 +1177,12 @@ async function handleLiquidationAlert(data) {
       lastTier: tierU,
     },
     logPrefix: "[LIQ]",
-    message: `Loan liquidation steady ${protocol}`,
+    message: `${protocol}`,
     meta: {
       wallet: shortenAddress(wallet),
             walletLabel,
+      walletAddress: wallet,
+      chainId,
       troveId: shortenTroveId(tokenId),
       prevTier: prevTierU,
       newTier: tierU,
@@ -1114,6 +1209,7 @@ async function handleRedemptionAlert(data) {
     protocol,
     wallet,
     walletLabel,
+    chainId,
   } = data;
 
   const tokenId = String(positionId);
@@ -1163,7 +1259,7 @@ async function handleRedemptionAlert(data) {
       }
 
       const age = nowMs - candSinceMs;
-      if (age < LOAN_REDEMP_DEBOUNCE_MS) {
+      if (age < LOAN_REDEMP_WORSENING_DEBOUNCE_MS) {
         await processAlert({
           userId,
           walletId,
@@ -1182,10 +1278,13 @@ async function handleRedemptionAlert(data) {
             lastTier: prevTierU,
           },
           logPrefix: "[REDEMP]",
-          message: `Redemption pending debounce ${protocol}`,
+          message: `${protocol}`,
           meta: {
             wallet: shortenAddress(wallet),
             walletLabel,
+            walletAddress: wallet,
+            chainId,
+            protocol,
             troveId: shortenTroveId(tokenId),
             prevTier: prevTierU,
             newTier: tierU,
@@ -1239,10 +1338,13 @@ async function handleRedemptionAlert(data) {
           lastTier: tierU,
         },
         logPrefix: "[REDEMP]",
-        message: `CDP redemption candidate ${protocol}`,
+        message: `${protocol}`,
         meta: {
           wallet: shortenAddress(wallet),
-            walletLabel,
+          walletLabel,
+          walletAddress: wallet,
+          chainId,
+          protocol,
           troveId: shortenTroveId(tokenId),
           prevTier: prevTierU,
           newTier: tierU,
@@ -1263,7 +1365,7 @@ async function handleRedemptionAlert(data) {
       }
 
       const age = nowMs - candTierSinceMs;
-      if (age < LOAN_REDEMP_DEBOUNCE_MS) {
+      if (age < LOAN_REDEMP_WORSENING_DEBOUNCE_MS) {
         upsertAlertState({
           userId,
           walletId,
@@ -1290,7 +1392,7 @@ async function handleRedemptionAlert(data) {
     const signature = makeSignature(sigPayload);
     const wouldUpdate = prev.signature !== signature;
 
-    const cooldownOk = nowMs - lastAlertAtMs >= LOAN_REDEMP_ALERT_COOLDOWN_MS;
+    const cooldownOk = true;
     const escalated = isTierEscalation(prevTierU, tierU, REDEMP_TIER_ORDER);
 
     const tierChanged = prevTierU !== tierU;
@@ -1317,16 +1419,19 @@ async function handleRedemptionAlert(data) {
           lastTier: tierU,
         },
         logPrefix: "[REDEMP]",
-        message: `CDP redemption candidate ${protocol}`,
-        meta: {
-          wallet: shortenAddress(wallet),
-            walletLabel,
-          troveId: shortenTroveId(tokenId),
-          prevTier: prevTierU,
-          newTier: tierU,
-          loanIR: cdpIR,
-          globalIR,
-        },
+        message: `${protocol}`,
+      meta: {
+        wallet: shortenAddress(wallet),
+        walletLabel,
+        walletAddress: wallet,
+        chainId,
+        protocol,
+        troveId: shortenTroveId(tokenId),
+        prevTier: prevTierU,
+        newTier: tierU,
+        loanIR: cdpIR,
+        globalIR,
+      },
         alertType,
       });
       return;
@@ -1373,16 +1478,19 @@ async function handleRedemptionAlert(data) {
         lastTier: tierU,
       },
       logPrefix: "[REDEMP]",
-      message: `CDP redemption candidate ${protocol}`,
-      meta: {
-        wallet: shortenAddress(wallet),
+      message: `${protocol}`,
+          meta: {
+            wallet: shortenAddress(wallet),
             walletLabel,
-        troveId: shortenTroveId(tokenId),
-        prevTier: prevTierU,
-        newTier: tierU,
-        loanIR: cdpIR,
-        globalIR,
-      },
+            walletAddress: wallet,
+            chainId,
+            protocol,
+            troveId: shortenTroveId(tokenId),
+            prevTier: prevTierU,
+            newTier: tierU,
+            loanIR: cdpIR,
+            globalIR,
+          },
       alertType,
     });
     return;
@@ -1395,7 +1503,7 @@ async function handleRedemptionAlert(data) {
     }
 
     const age = nowMs - candSinceMs;
-    if (age < LOAN_REDEMP_RESOLVE_DEBOUNCE_MS) {
+    if (age < LOAN_REDEMP_IMPROVING_DEBOUNCE_MS) {
       upsertAlertState({
         userId,
         walletId,
@@ -1418,8 +1526,7 @@ async function handleRedemptionAlert(data) {
       return;
     }
 
-    const cooldownOk = nowMs - lastAlertAtMs >= LOAN_REDEMP_ALERT_COOLDOWN_MS;
-    const allowResolveNotify = cooldownOk && Number.isFinite(globalIR);
+    const allowResolveNotify = Number.isFinite(globalIR);
 
     await processAlert({
       userId,
@@ -1439,10 +1546,13 @@ async function handleRedemptionAlert(data) {
         lastTier: prevTierU,
       },
       logPrefix: "[REDEMP]",
-      message: `CDP redemption no longer economically attractive ${protocol}`,
+      message: `${protocol}`,
       meta: {
         wallet: shortenAddress(wallet),
-            walletLabel,
+        walletLabel,
+        walletAddress: wallet,
+        chainId,
+        protocol,
         troveId: shortenTroveId(tokenId),
         prevTier: prevTierU,
         newTier: tierU,
@@ -1473,10 +1583,12 @@ async function handleRedemptionAlert(data) {
       lastTier: tierU,
     },
     logPrefix: "[REDEMP]",
-    message: `Redemption steady ${protocol}`,
+    message: `${protocol}`,
     meta: {
       wallet: shortenAddress(wallet),
             walletLabel,
+      walletAddress: wallet,
+      chainId,
       troveId: shortenTroveId(tokenId),
       prevTier: prevTierU,
       newTier: tierU,
@@ -1506,6 +1618,7 @@ async function handleLpRangeAlert(data) {
     protocol,
     wallet,
     walletLabel,
+    chainId,
     pairLabel,
     priceLower,
     priceUpper,
@@ -1596,7 +1709,7 @@ async function handleLpRangeAlert(data) {
 
   if (statusChanged) {
     const debounceMs =
-      currStatus === "OUT_OF_RANGE" ? LP_OOR_DEBOUNCE_MS : LP_IN_DEBOUNCE_MS;
+      currStatus === "OUT_OF_RANGE" ? LP_WORSENING_DEBOUNCE_MS : LP_IMPROVING_DEBOUNCE_MS;
     if (candidateStatus !== currStatus) {
       candidateStatus = currStatus;
       candidateSinceMs = nowMs;
@@ -1626,7 +1739,7 @@ async function handleLpRangeAlert(data) {
 
   const LP_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
   const escalated = isTierEscalation(prevTierU, tierU, LP_TIER_ORDER);
-  const cooldownOk = nowMs - lastAlertAtMs >= LP_ALERT_COOLDOWN_MS;
+  const cooldownOk = true;
   const allowNotifyUpdate =
     prevActive &&
     prev.signature !== signature &&
@@ -1679,6 +1792,9 @@ async function handleLpRangeAlert(data) {
       positionId: shortenTroveId(tokenId),
       wallet: shortenAddress(wallet),
       walletLabel,
+      walletAddress: wallet,
+      chainId,
+      protocol,
       pairLabel,
       priceLower,
       priceUpper,

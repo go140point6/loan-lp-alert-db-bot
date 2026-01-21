@@ -40,16 +40,6 @@ const CHAINS_CONFIG = {
 // -----------------------------
 const LP_TIER_ORDER = ["LOW", "MEDIUM", "HIGH", "CRITICAL", "UNKNOWN"];
 
-const LP_ALERT_MIN_TIER = String(process.env.LP_ALERT_MIN_TIER || "UNKNOWN").toUpperCase();
-if (!LP_TIER_ORDER.includes(LP_ALERT_MIN_TIER)) {
-  logger.error(
-    `[Config] LP_ALERT_MIN_TIER must be one of ${LP_TIER_ORDER.join(", ")}, got "${process.env.LP_ALERT_MIN_TIER}"`
-  );
-  throw new Error(
-    `[Config] LP_ALERT_MIN_TIER must be one of ${LP_TIER_ORDER.join(", ")}, got "${process.env.LP_ALERT_MIN_TIER}"`
-  );
-}
-
 const LP_EDGE_WARN_FRAC = Number(process.env.LP_EDGE_WARN_FRAC);
 const LP_EDGE_HIGH_FRAC = Number(process.env.LP_EDGE_HIGH_FRAC);
 const LP_OUT_WARN_FRAC = Number(process.env.LP_OUT_WARN_FRAC);
@@ -700,6 +690,8 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
       protocol,
       wallet: owner,
       walletLabel,
+      walletAddress: owner,
+      chainId,
       pairLabel: pairLabelFallback,
       priceLower: null,
       priceUpper: null,
@@ -776,8 +768,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
   }
 
   const lpClass = classifyLpRangeTier(currentStatus, tickLower, tickUpper, currentTick);
-  const isActive =
-    currentStatus === "OUT_OF_RANGE" && isLpTierAtLeast(lpClass.tier, LP_ALERT_MIN_TIER);
+  const isActive = lpClass.tier !== "UNKNOWN";
 
   await handleLpRangeAlert({
     userId,
@@ -794,6 +785,8 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
     protocol,
     wallet: owner,
     walletLabel,
+    walletAddress: owner,
+    chainId,
     pairLabel,
     priceLower,
     priceUpper,

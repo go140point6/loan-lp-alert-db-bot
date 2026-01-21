@@ -6,6 +6,8 @@ const { createDecimalFormatter } = require("../utils/intlNumberFormats");
 const { getDb } = require("../db");
 const logger = require("../utils/logger");
 const { shortenTroveId } = require("../utils/ethers/shortenTroveId");
+const { formatLoanTroveLink } = require("../utils/links");
+const { formatLpPositionLink } = require("../utils/links");
 
 // -----------------------------
 // Formatting helpers
@@ -56,8 +58,10 @@ function formatLoanField(s) {
     UNKNOWN: "⬜",
   }[tier] || "⬜";
 
-  const title = `${tierEmoji} ${s.protocol || "UNKNOWN"} (${s.chainId || "?"}) — trove ${troveId}`;
+  const troveLink = formatLoanTroveLink(s.protocol, rawId, troveId);
+  const title = `${tierEmoji} ${s.protocol || "UNKNOWN"} (${s.chainId || "?"})`;
   const lines = [];
+  lines.push(`Trove: ${troveLink}`);
 
   const status = s.status || "UNKNOWN";
   lines.push(`Status: ${status}`);
@@ -69,10 +73,14 @@ function formatLoanField(s) {
         ? `${(s.liquidationBufferFrac * 100).toFixed(2)}%`
         : "n/a";
     lines.push("Risk:");
+    const debtText =
+      typeof s.debtAmount === "number" && Number.isFinite(s.debtAmount)
+        ? fmtNum4(s.debtAmount)
+        : "n/a";
     lines.push(
       `LTV: ${ltvText} | Price: ${fmtNum5(s.price)} | Liq: ${fmtNum5(
         s.liquidationPrice
-      )} | Buffer: ${bufferText} (${tier})`
+      )} | Buffer: ${bufferText} (${tier}) | Debt: ${debtText}`
     );
   } else {
     lines.push("Risk:");
@@ -84,11 +92,16 @@ function formatLoanField(s) {
     if (typeof s.globalIrPct === "number") {
       irLine += ` | Global: ${s.globalIrPct.toFixed(2)}%`;
     }
-    if (s.redemptionTier) {
-      irLine += ` | Redemption: ${s.redemptionTier}`;
-    }
+      if (s.redemptionTier) {
+        irLine += ` | Redemption: ${s.redemptionTier}`;
+      }
     lines.push("Rates:");
     lines.push(irLine);
+
+    if (typeof s.redemptionDiffPct === "number" && Number.isFinite(s.redemptionDiffPct)) {
+      const delta = s.redemptionDiffPct;
+      lines.push(`(Δ ${delta >= 0 ? "+" : ""}${delta.toFixed(2)} pp vs global)`);
+    }
   }
 
   return { name: title, value: lines.join("\n") };
@@ -96,6 +109,7 @@ function formatLoanField(s) {
 
 function formatLpField(s) {
   const tokenId = s.tokenId ?? s.positionId ?? "?";
+  const tokenLink = formatLpPositionLink(s.protocol, tokenId, shortenTroveId(tokenId));
   const pair =
     s.pairLabel ||
     `${s.token0Symbol || s.token0 || "?"}-${s.token1Symbol || s.token1 || "?"}`;
@@ -108,19 +122,9 @@ function formatLpField(s) {
     INACTIVE: "⚫",
   }[rangeStatus] || "⚪";
 
-  const title = `${s.protocol || "UNKNOWN"} ${pair} (${s.chainId || "?"}) — token ${shortenTroveId(
-    tokenId
-  )}`;
+  const title = `${s.protocol || "UNKNOWN"} ${pair} (${s.chainId || "?"})`;
   const parts = [];
-  parts.push(`Status: ${s.status || "UNKNOWN"} | Range: ${statusEmoji} ${rangeStatus}`);
-
-  if (s.lpRangeTier && s.lpRangeTier !== "UNKNOWN") {
-    const tier = s.lpRangeTier.toString().toUpperCase();
-    const tierEmoji = { CRITICAL: "🟥", HIGH: "🟧", MEDIUM: "🟨", LOW: "🟩", UNKNOWN: "⬜" }[tier] || "⬜";
-    parts.push(
-      `Range tier: ${tierEmoji} ${s.lpRangeTier}${s.lpRangeLabel ? ` (${s.lpRangeLabel})` : ""}`
-    );
-  }
+  parts.push(`Token: ${tokenLink}`);
 
   const hasAmounts =
     typeof s.amount0 === "number" &&
@@ -132,23 +136,32 @@ function formatLpField(s) {
     const sym0 = s.token0Symbol || "token0";
     const sym1 = s.token1Symbol || "token1";
     parts.push(
-      `Liquidity: ${sym0} ${formatTokenAmount(s.amount0)}, ${sym1} ${formatTokenAmount(s.amount1)}`
+      `Principal: ${sym0} ${formatTokenAmount(s.amount0)}, ${sym1} ${formatTokenAmount(s.amount1)}`
     );
   } else if (s.liquidity) {
-    parts.push(`Liquidity: ${s.liquidity}`);
+    parts.push(`Principal: ${s.liquidity}`);
   }
 
-  const hasFees =
+  if (
     typeof s.fees0 === "number" &&
     Number.isFinite(s.fees0) &&
     typeof s.fees1 === "number" &&
-    Number.isFinite(s.fees1);
-
-  if (hasFees) {
+    Number.isFinite(s.fees1)
+  ) {
     const sym0 = s.token0Symbol || "token0";
     const sym1 = s.token1Symbol || "token1";
     parts.push(
-      `Fees: ${sym0} ${formatTokenAmount(s.fees0)}, ${sym1} ${formatTokenAmount(s.fees1)}`
+      `Uncollected fees: ${sym0} ${formatTokenAmount(s.fees0)}, ${sym1} ${formatTokenAmount(s.fees1)}`
+    );
+  }
+
+  parts.push(`Status: ${s.status || "UNKNOWN"} | Range: ${statusEmoji} ${rangeStatus}`);
+
+  if (s.lpRangeTier && s.lpRangeTier !== "UNKNOWN") {
+    const tier = s.lpRangeTier.toString().toUpperCase();
+    const tierEmoji = { CRITICAL: "🟥", HIGH: "🟧", MEDIUM: "🟨", LOW: "🟩", UNKNOWN: "⬜" }[tier] || "⬜";
+    parts.push(
+      `Range tier: ${tierEmoji} ${s.lpRangeTier}${s.lpRangeLabel ? ` (${s.lpRangeLabel})` : ""}`
     );
   }
 
