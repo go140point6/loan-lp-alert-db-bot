@@ -64,7 +64,7 @@ Both export and import scripts require environment variables only
 ### Required
 
 ```
-MONITOR_DB_PATH=/absolute/path/to/monitor.db
+DB_PATH=/absolute/path/to/liquidity-sentinel.sqlite
 ```
 
 ### Optional (export only)
@@ -115,8 +115,7 @@ Restoring into a non-empty database can break foreign-key relationships.
 ### Recommended restore steps
 
 ```
-rm -f data/monitor.db data/monitor.db-wal data/monitor.db-shm
-node dev/createDB.js
+rm -f data/liquidity-sentinel.sqlite data/liquidity-sentinel.sqlite-wal data/liquidity-sentinel.sqlite-shm
 node dev/importSnapshot.js --file=data/snapshots/snapshot_XXXX.json.gz --wipe=1
 ```
 

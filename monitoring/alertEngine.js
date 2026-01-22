@@ -474,6 +474,7 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
       const walletText = meta?.walletAddress
         ? formatAddressLink(meta.chainId, meta.walletAddress)
         : meta?.wallet || "n/a";
+      const statusOnly = meta?.lpStatusOnly === 1 || meta?.lpStatusOnly === true;
       const fields = [
         {
           name: "Position",
@@ -499,8 +500,12 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
       });
       fields.push(
         { name: "Status", value: statusWithPrice, inline: false },
-        { name: "Tier", value: tierValue, inline: false },
-        { name: "Meaning", value: meaning, inline: false }
+        ...(statusOnly
+          ? []
+          : [
+              { name: "Tier", value: tierValue, inline: false },
+              { name: "Meaning", value: meaning, inline: false },
+            ])
       );
       embed.addFields(fields);
 
@@ -653,6 +658,8 @@ async function processAlert({
 
   // allow DM on RESOLVED for LP “back in range”
   notifyOnResolved = false,
+  // When true, treat first active transition as UPDATED (used for loans)
+  forceUpdated = false,
 }) {
   assertPresent("userId", userId);
   assertPresent("walletId", walletId);
@@ -664,6 +671,35 @@ async function processAlert({
 
   const prev = getPrevState({ userId, walletId, contractId, tokenId, alertType });
   const prevActive = prev.isActive === 1;
+
+  if (forceUpdated && isActive && !prevActive) {
+    console.warn(`${logPrefix} ALERT UPDATED: ${message}`, { ...meta });
+
+    upsertAlertState({
+      userId,
+      walletId,
+      contractId,
+      tokenId,
+      alertType,
+      isActive: true,
+      signature,
+      stateJson,
+    });
+    insertAlertLog({
+      userId,
+      walletId,
+      contractId,
+      tokenId,
+      alertType,
+      phase: "UPDATED",
+      message,
+      meta,
+      signature,
+    });
+
+    await sendDmToUser({ userId, phase: "UPDATED", alertType, logPrefix, message, meta });
+    return;
+  }
 
   if (isActive && !prevActive) {
     console.warn(`${logPrefix} NEW ALERT: ${message}`, { ...meta });
@@ -850,6 +886,7 @@ async function handleLiquidationAlert(data) {
 
   const lastAlertAtMs = Number(prevObj?.lastAlertAtMs || 0) || 0;
   const prevTierU = (prevObj?.lastTier || "UNKNOWN").toString().toUpperCase();
+  const lastTierChangeAtMs = Number(prevObj?.lastTierChangeAtMs || 0) || 0;
 
   let cand = prevObj?.candidateStatus ? String(prevObj.candidateStatus) : null;
   let candSinceMs = Number(prevObj?.candidateSinceMs || 0) || 0;
@@ -866,6 +903,7 @@ async function handleLiquidationAlert(data) {
     liquidationPrice,
     currentPrice,
     liquidationBufferFrac,
+    lastTierChangeAtMs,
   };
 
   // Active condition is "liquidation risk tier >= min tier" as decided by caller (or overridden).
@@ -931,6 +969,7 @@ async function handleLiquidationAlert(data) {
             candidateStatus: null,
             candidateSinceMs: 0,
             lastAlertAtMs: nowMs,
+            lastTierChangeAtMs: nowMs,
             lastTier: tierU,
           }),
         });
@@ -950,10 +989,12 @@ async function handleLiquidationAlert(data) {
           candidateStatus: null,
           candidateSinceMs: 0,
           lastAlertAtMs: nowMs,
+          lastTierChangeAtMs: nowMs,
           lastTier: tierU,
         },
         logPrefix: "[LIQ]",
         message: `${protocol}`,
+        forceUpdated: prev.exists,
         meta: {
           wallet: shortenAddress(wallet),
           walletLabel,
@@ -973,16 +1014,49 @@ async function handleLiquidationAlert(data) {
       return;
     }
 
+    const tierChanged = prevTierU !== tierU;
+    const escalated = isTierEscalation(prevTierU, tierU, LIQ_TIER_ORDER);
+    const improved = isTierEscalation(tierU, prevTierU, LIQ_TIER_ORDER);
+    const tierDebounceMs = escalated
+      ? LOAN_LIQ_WORSENING_DEBOUNCE_MS
+      : improved
+      ? LOAN_LIQ_IMPROVING_DEBOUNCE_MS
+      : 0;
+
+    if (tierChanged && tierDebounceMs > 0 && lastTierChangeAtMs) {
+      const age = nowMs - lastTierChangeAtMs;
+      if (age < tierDebounceMs) {
+        upsertAlertState({
+          userId,
+          walletId,
+          contractId,
+          tokenId,
+          alertType,
+          isActive: true,
+          signature: prev.signature,
+          stateJson: JSON.stringify({
+            ...baseState,
+            confirmedStatus: "ON",
+            candidateStatus: null,
+            candidateSinceMs: 0,
+            lastAlertAtMs,
+            lastTierChangeAtMs: nowMs,
+            lastTier: prevTierU,
+          }),
+        });
+        return;
+      }
+    }
+
     // prevActive=true: keep active, but suppress noisy UPDATEDs during cooldown unless escalation
     const signature = makeSignature(sigPayload);
     const wouldUpdate = prev.signature !== signature;
 
     const cooldownOk = true;
-    const escalated = isTierEscalation(prevTierU, tierU, LIQ_TIER_ORDER);
-
-    const tierChanged = prevTierU !== tierU;
+    // escalated already computed above
     const allowNotifyUpdate = wouldUpdate && (cooldownOk || escalated) && tierChanged;
     const newLastAlertAtMs = allowNotifyUpdate ? nowMs : lastAlertAtMs;
+    const newLastTierChangeAtMs = tierChanged ? nowMs : lastTierChangeAtMs;
 
     if (!wouldUpdate) {
       await processAlert({
@@ -998,6 +1072,7 @@ async function handleLiquidationAlert(data) {
           candidateStatus: null,
           candidateSinceMs: 0,
           lastAlertAtMs: newLastAlertAtMs,
+          lastTierChangeAtMs: newLastTierChangeAtMs,
           lastTier: tierU,
         },
         logPrefix: "[LIQ]",
@@ -1036,6 +1111,7 @@ async function handleLiquidationAlert(data) {
           candidateStatus: null,
           candidateSinceMs: 0,
           lastAlertAtMs: newLastAlertAtMs,
+          lastTierChangeAtMs: newLastTierChangeAtMs,
           lastTier: tierU,
         }),
       });
@@ -1055,6 +1131,7 @@ async function handleLiquidationAlert(data) {
         candidateStatus: null,
         candidateSinceMs: 0,
         lastAlertAtMs: newLastAlertAtMs,
+        lastTierChangeAtMs: newLastTierChangeAtMs,
         lastTier: tierU,
       },
       logPrefix: "[LIQ]",
@@ -1235,11 +1312,10 @@ async function handleRedemptionAlert(data) {
 
   const lastAlertAtMs = Number(prevObj?.lastAlertAtMs || 0) || 0;
   const prevTierU = (prevObj?.lastTier || "UNKNOWN").toString().toUpperCase();
+  const lastTierChangeAtMs = Number(prevObj?.lastTierChangeAtMs || 0) || 0;
 
   let cand = prevObj?.candidateStatus ? String(prevObj.candidateStatus) : null;
   let candSinceMs = Number(prevObj?.candidateSinceMs || 0) || 0;
-  let candTier = prevObj?.candidateTier ? String(prevObj.candidateTier) : null;
-  let candTierSinceMs = Number(prevObj?.candidateTierSinceMs || 0) || 0;
 
   const diff = typeof cdpIR === "number" && typeof globalIR === "number" ? cdpIR - globalIR : null;
 
@@ -1249,7 +1325,7 @@ async function handleRedemptionAlert(data) {
     diffB: diff == null || !Number.isFinite(diff) ? null : Math.round(diff * 2),
   };
 
-  const baseState = { kind: "LOAN", tier: tierU, cdpIR, globalIR, isCDPActive };
+  const baseState = { kind: "LOAN", tier: tierU, cdpIR, globalIR, isCDPActive, lastTierChangeAtMs };
 
   if (observedActiveFinal) {
     if (!prevActive) {
@@ -1314,6 +1390,7 @@ async function handleRedemptionAlert(data) {
             candidateTier: null,
             candidateTierSinceMs: 0,
             lastAlertAtMs: nowMs,
+            lastTierChangeAtMs: nowMs,
             lastTier: tierU,
           }),
         });
@@ -1335,10 +1412,12 @@ async function handleRedemptionAlert(data) {
           candidateTier: null,
           candidateTierSinceMs: 0,
           lastAlertAtMs: nowMs,
+          lastTierChangeAtMs: nowMs,
           lastTier: tierU,
         },
         logPrefix: "[REDEMP]",
         message: `${protocol}`,
+        forceUpdated: prev.exists,
         meta: {
           wallet: shortenAddress(wallet),
           walletLabel,
@@ -1357,15 +1436,18 @@ async function handleRedemptionAlert(data) {
     }
 
     const immediateCritical = tierU === "CRITICAL" && prevTierU !== "CRITICAL";
+    const tierChanged = prevTierU !== tierU;
+    const escalated = isTierEscalation(prevTierU, tierU, REDEMP_TIER_ORDER);
+    const improved = isTierEscalation(tierU, prevTierU, REDEMP_TIER_ORDER);
+    const tierDebounceMs = escalated
+      ? LOAN_REDEMP_WORSENING_DEBOUNCE_MS
+      : improved
+      ? LOAN_REDEMP_IMPROVING_DEBOUNCE_MS
+      : 0;
 
-    if (tierU !== prevTierU && !immediateCritical) {
-      if ((candTier || "").toUpperCase() !== tierU) {
-        candTier = tierU;
-        candTierSinceMs = nowMs;
-      }
-
-      const age = nowMs - candTierSinceMs;
-      if (age < LOAN_REDEMP_WORSENING_DEBOUNCE_MS) {
+    if (tierChanged && !immediateCritical && tierDebounceMs > 0 && lastTierChangeAtMs) {
+      const age = nowMs - lastTierChangeAtMs;
+      if (age < tierDebounceMs) {
         upsertAlertState({
           userId,
           walletId,
@@ -1379,9 +1461,10 @@ async function handleRedemptionAlert(data) {
             confirmedStatus: "ON",
             candidateStatus: null,
             candidateSinceMs: 0,
-            candidateTier: candTier,
-            candidateTierSinceMs: candTierSinceMs,
+            candidateTier: null,
+            candidateTierSinceMs: 0,
             lastAlertAtMs,
+            lastTierChangeAtMs: nowMs,
             lastTier: prevTierU,
           }),
         });
@@ -1393,12 +1476,10 @@ async function handleRedemptionAlert(data) {
     const wouldUpdate = prev.signature !== signature;
 
     const cooldownOk = true;
-    const escalated = isTierEscalation(prevTierU, tierU, REDEMP_TIER_ORDER);
-
-    const tierChanged = prevTierU !== tierU;
     const allowNotifyUpdate =
       immediateCritical || (wouldUpdate && (cooldownOk || escalated) && tierChanged);
     const newLastAlertAtMs = allowNotifyUpdate ? nowMs : lastAlertAtMs;
+    const newLastTierChangeAtMs = tierChanged ? nowMs : lastTierChangeAtMs;
 
     if (!wouldUpdate) {
       await processAlert({
@@ -1416,6 +1497,7 @@ async function handleRedemptionAlert(data) {
           candidateTier: null,
           candidateTierSinceMs: 0,
           lastAlertAtMs: newLastAlertAtMs,
+          lastTierChangeAtMs: newLastTierChangeAtMs,
           lastTier: tierU,
         },
         logPrefix: "[REDEMP]",
@@ -1454,6 +1536,7 @@ async function handleRedemptionAlert(data) {
           candidateTier: null,
           candidateTierSinceMs: 0,
           lastAlertAtMs: newLastAlertAtMs,
+          lastTierChangeAtMs: newLastTierChangeAtMs,
           lastTier: tierU,
         }),
       });
@@ -1470,13 +1553,14 @@ async function handleRedemptionAlert(data) {
       state: {
         ...baseState,
         confirmedStatus: "ON",
-        candidateStatus: null,
-        candidateSinceMs: 0,
-        candidateTier: null,
-        candidateTierSinceMs: 0,
-        lastAlertAtMs: newLastAlertAtMs,
-        lastTier: tierU,
-      },
+      candidateStatus: null,
+      candidateSinceMs: 0,
+      candidateTier: null,
+      candidateTierSinceMs: 0,
+      lastAlertAtMs: newLastAlertAtMs,
+      lastTierChangeAtMs: newLastTierChangeAtMs,
+      lastTier: tierU,
+    },
       logPrefix: "[REDEMP]",
       message: `${protocol}`,
           meta: {
@@ -1606,7 +1690,6 @@ async function handleLpRangeAlert(data) {
     contractId,
     positionId,
 
-    prevStatus,
     currentStatus,
 
     isActive: observedActive,
@@ -1625,6 +1708,7 @@ async function handleLpRangeAlert(data) {
     currentPrice,
     priceBaseSymbol,
     priceQuoteSymbol,
+    lpStatusOnly,
   } = data;
 
   const tokenId = String(positionId);
@@ -1634,6 +1718,7 @@ async function handleLpRangeAlert(data) {
 
   const currStatus = normLpStatus(currentStatus);
   const tierU = (lpRangeTier || "UNKNOWN").toString().toUpperCase();
+  const statusOnly = lpStatusOnly === 1 || lpStatusOnly === true;
 
   if (currStatus === "INACTIVE") {
     upsertAlertState({
@@ -1675,6 +1760,7 @@ async function handleLpRangeAlert(data) {
 
   let candidateStatus = prevObj?.candidateStatus ? normLpStatus(prevObj.candidateStatus) : null;
   let candidateSinceMs = Number(prevObj?.candidateSinceMs || 0) || 0;
+  const lastStatusChangeAtMs = Number(prevObj?.lastStatusChangeAtMs || 0) || 0;
 
   const sigPayload = {
     currentStatus: currStatus,
@@ -1698,6 +1784,7 @@ async function handleLpRangeAlert(data) {
         candidateStatus: null,
         candidateSinceMs: 0,
         lastAlertAtMs: nowMs,
+        lastStatusChangeAtMs: 0,
         lastTier: tierU,
       }),
     });
@@ -1705,16 +1792,22 @@ async function handleLpRangeAlert(data) {
   }
 
   const statusChanged = prevStatusU !== currStatus;
-  const tierChanged = prevTierU !== tierU;
+  const rawTierChanged = prevTierU !== tierU;
+  const tierChanged = !statusOnly && rawTierChanged;
+
+  if (statusOnly && rawTierChanged && !statusChanged) {
+    const shortWallet = shortenAddress(wallet);
+    const shortToken = shortenTroveId(tokenId);
+    logger.info(
+      `[LP] Status-only: tier change suppressed (${protocol} ${pairLabel || "UNKNOWN_PAIR"} ` +
+        `token=${shortToken} wallet=${shortWallet} status=${currStatus} ${prevTierU}→${tierU})`
+    );
+  }
 
   if (statusChanged) {
     const debounceMs =
       currStatus === "OUT_OF_RANGE" ? LP_WORSENING_DEBOUNCE_MS : LP_IMPROVING_DEBOUNCE_MS;
-    if (candidateStatus !== currStatus) {
-      candidateStatus = currStatus;
-      candidateSinceMs = nowMs;
-    }
-    if (nowMs - candidateSinceMs < debounceMs) {
+    if (debounceMs > 0 && lastStatusChangeAtMs && nowMs - lastStatusChangeAtMs < debounceMs) {
       upsertAlertState({
         userId,
         walletId,
@@ -1727,9 +1820,10 @@ async function handleLpRangeAlert(data) {
           kind: "LP",
           rangeStatus: currStatus,
           confirmedStatus: prevStatusU,
-          candidateStatus,
-          candidateSinceMs,
+          candidateStatus: null,
+          candidateSinceMs: 0,
           lastAlertAtMs,
+          lastStatusChangeAtMs,
           lastTier: prevTierU,
         }),
       });
@@ -1764,6 +1858,7 @@ async function handleLpRangeAlert(data) {
         candidateStatus: null,
         candidateSinceMs: 0,
         lastAlertAtMs: newLastAlertAtMs,
+        lastStatusChangeAtMs: statusChanged ? nowMs : lastStatusChangeAtMs,
         lastTier: tierU,
       }),
     });
@@ -1784,6 +1879,7 @@ async function handleLpRangeAlert(data) {
       candidateStatus: null,
       candidateSinceMs: 0,
       lastAlertAtMs: newLastAlertAtMs,
+      lastStatusChangeAtMs: statusChanged ? nowMs : lastStatusChangeAtMs,
       lastTier: tierU,
     },
     logPrefix: "[LP]",
@@ -1801,11 +1897,12 @@ async function handleLpRangeAlert(data) {
       currentPrice,
       priceBaseSymbol,
       priceQuoteSymbol,
-      prevStatus,
+      prevStatus: prevStatusU,
       currentStatus: currStatus,
       prevTier: prevTierU,
       newTier: tierU,
       lpRangeTier: tierU,
+      lpStatusOnly: statusOnly,
     },
     alertType,
     notifyOnResolved: false,

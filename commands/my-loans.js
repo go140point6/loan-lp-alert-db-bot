@@ -8,6 +8,7 @@ const { ephemeralFlags } = require("../utils/discord/ephemerals");
 const { createDecimalFormatter } = require("../utils/intlNumberFormats");
 const { formatLoanTroveLink } = require("../utils/links");
 const logger = require("../utils/logger");
+const { getTestOffsets } = require("../monitoring/testOffsets");
 
 function chunk(arr, size) {
   const out = [];
@@ -95,6 +96,14 @@ module.exports = {
         cdpState = classifyCdpRedemptionState(cdpPrice);
       } catch (e) {
         logger.warn("[my-loans] CDP price/state unavailable:", e?.message || e);
+      }
+      const { irOffsetPp } = getTestOffsets();
+      if (irOffsetPp !== 0 && cdpState) {
+        cdpState = {
+          ...cdpState,
+          state: "ACTIVE",
+          label: `${cdpState.label} (test IR override)`,
+        };
       }
 
       const descLines = ["Current status of your monitored loan positions."];

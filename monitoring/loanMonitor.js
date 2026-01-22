@@ -21,7 +21,12 @@ const uniswapV3PoolAbi = require("../abi/uniswapV3Pool.json");
 const { getDb } = require("../db");
 const { getProviderForChain } = require("../utils/ethers/providers");
 const { handleLiquidationAlert, handleRedemptionAlert } = require("./alertEngine");
-const { applyGlobalIrOffset, applyPriceMultiplier, logRunApplied } = require("./testOffsets");
+const {
+  applyGlobalIrOffset,
+  applyPriceMultiplier,
+  logRunApplied,
+  getTestOffsets,
+} = require("./testOffsets");
 const logger = require("../utils/logger");
 
 // -----------------------------
@@ -628,6 +633,14 @@ async function monitorLoans() {
     cdpState = classifyCdpRedemptionState(cdpPrice);
   } catch (e) {
     logger.warn(`[loanMonitor] CDP price/state unavailable: ${e?.message || e}`);
+  }
+  const { irOffsetPp } = getTestOffsets();
+  if (irOffsetPp !== 0 && cdpState) {
+    cdpState = {
+      ...cdpState,
+      state: "ACTIVE",
+      label: `${cdpState.label} (test IR override)`,
+    };
   }
 
   const byChain = new Map();

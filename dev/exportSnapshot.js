@@ -20,7 +20,7 @@ require("dotenv").config({
 
 const logger = require("../utils/logger");
 
-// Strict: require MONITOR_DB_PATH (env only)
+// Strict: require DB_PATH (env only)
 function requireEnv(name) {
   const v = process.env[name];
   if (!v) {
@@ -30,7 +30,7 @@ function requireEnv(name) {
   return v;
 }
 
-const SRC_DB = requireEnv("MONITOR_DB_PATH");
+const SRC_DB = requireEnv("DB_PATH");
 const OUT_DIR = path.join(__dirname, "..", "data", "snapshots");
 
 const INCLUDE_TRANSFERS = process.env.SNAPSHOT_INCLUDE_TRANSFERS === "1";

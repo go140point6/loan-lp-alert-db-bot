@@ -3,7 +3,7 @@
  * scripts/findSparkdexScamLpTokens.js
  *
  * Usage examples:
- *   node scripts/findSparkdexScamLpTokens.js --db /path/to/monitor.db --chain FLR --address 0xee5ff5bc5f852764b5584d92a4d592a53dc527da
+ *   node scripts/findSparkdexScamLpTokens.js --db /path/to/liquidity-sentinel.sqlite --chain FLR --address 0xee5ff5bc5f852764b5584d92a4d592a53dc527da
  *
  * Optional:
  *   --min-count 50     (only consider issuer candidates with >= this many first-transfers)
@@ -43,14 +43,14 @@ const ZERO = "0x0000000000000000000000000000000000000000";
 const DEAD = "0x000000000000000000000000000000000000dead";
 const BURN_SET = new Set([ZERO, DEAD]);
 
-const dbPath = getArg("db", process.env.MONITOR_DB_PATH);
+const dbPath = getArg("db", process.env.DB_PATH);
 const chainId = (getArg("chain", "FLR") || "").toUpperCase();
 const address = lower0x(getArg("address", null));
 const topN = Number(getArg("top", "10"));
 const minCount = Number(getArg("min-count", "25"));
 const forcedIssuer = lower0x(getArg("issuer", "") || "");
 
-if (!dbPath) die("❌ Missing --db <path> (or set MONITOR_DB_PATH).");
+if (!dbPath) die("❌ Missing --db <path> (or set DB_PATH).");
 if (!address || !address.startsWith("0x") || address.length !== 42) {
   die("❌ Missing/invalid --address 0x... (42 chars).");
 }

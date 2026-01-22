@@ -50,14 +50,14 @@ function prepareQueries(db) {
     // WALLETS
     // =========================
     selUserWallets: db.prepare(`
-      SELECT id, chain_id, address_eip55, address_lower, label, is_enabled, created_at
+      SELECT id, chain_id, address_eip55, address_lower, label, lp_alerts_status_only, is_enabled, created_at
       FROM user_wallets
       WHERE user_id = ?
       ORDER BY chain_id, COALESCE(label, ''), address_lower
     `),
 
     selUserWalletsByChain: db.prepare(`
-      SELECT id, chain_id, address_eip55, address_lower, label, is_enabled, created_at
+      SELECT id, chain_id, address_eip55, address_lower, label, lp_alerts_status_only, is_enabled, created_at
       FROM user_wallets
       WHERE user_id = ?
         AND chain_id = ?
@@ -67,7 +67,7 @@ function prepareQueries(db) {
 
     // Security: ensure wallet belongs to user
     selUserWalletByIdForUser: db.prepare(`
-      SELECT id, user_id, chain_id, address_eip55, address_lower, label, is_enabled
+      SELECT id, user_id, chain_id, address_eip55, address_lower, label, lp_alerts_status_only, is_enabled
       FROM user_wallets
       WHERE id = ?
         AND user_id = ?
@@ -77,6 +77,12 @@ function prepareQueries(db) {
     disableWallet: db.prepare(`
       UPDATE user_wallets
       SET is_enabled = 0, updated_at = datetime('now')
+      WHERE id = ? AND user_id = ?
+    `),
+
+    setWalletLpStatusOnly: db.prepare(`
+      UPDATE user_wallets
+      SET lp_alerts_status_only = ?, updated_at = datetime('now')
       WHERE id = ? AND user_id = ?
     `),
 

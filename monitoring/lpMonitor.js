@@ -334,6 +334,7 @@ function getMonitoredLpRows(userId = null) {
 
       uw.address_eip55     AS owner,
       uw.label            AS walletLabel,
+      uw.lp_alerts_status_only AS lpStatusOnly,
       c.address_eip55      AS contract,
 
       nt.token_id          AS tokenId,
@@ -634,6 +635,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
     pairLabel: dbPairLabel,
     prevStateJson,
     walletLabel,
+    lpStatusOnly,
   } = row;
   const prevStatus = extractPrevRangeStatus(prevStateJson);
 
@@ -692,6 +694,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
       walletLabel,
       walletAddress: owner,
       chainId,
+      lpStatusOnly,
       pairLabel: pairLabelFallback,
       priceLower: null,
       priceUpper: null,
@@ -787,6 +790,7 @@ async function describeLpPosition(provider, chainId, protocol, row, options = {}
     walletLabel,
     walletAddress: owner,
     chainId,
+    lpStatusOnly,
     pairLabel,
     priceLower,
     priceUpper,

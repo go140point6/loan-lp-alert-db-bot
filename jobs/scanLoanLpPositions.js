@@ -27,7 +27,7 @@ function requireEnv(name) {
   return v;
 }
 
-const DB_PATH = requireEnv("MONITOR_DB_PATH");
+const DB_PATH = requireEnv("DB_PATH");
 
 const FLR_RPC_URL = requireEnv("FLR_MAINNET_SCAN");
 const XDC_RPC_URL = requireEnv("XDC_MAINNET_SCAN");
