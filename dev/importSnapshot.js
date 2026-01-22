@@ -2,8 +2,7 @@
 // Import snapshot produced by the NEW dev/exportSnapshot.js (version=2)
 //
 // Recommended restore flow:
-//   rm -f data/monitor.db data/monitor.db-wal data/monitor.db-shm
-//   node dev/createDB.js
+//   rm -f data/liquidity-sentinel.sqlite data/liquidity-sentinel.sqlite-wal data/liquidity-sentinel.sqlite-shm
 //   node dev/importSnapshot.js --file=data/snapshots/snapshot_XXXX.json --wipe=1
 //
 // IMPORTANT:
@@ -14,7 +13,7 @@
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
-const Database = require("better-sqlite3");
+const { openDb, initSchema } = require("../db");
 
 require("dotenv").config({
   path: path.join(__dirname, "..", ".env"),
@@ -32,7 +31,7 @@ function requireEnv(name) {
   return v;
 }
 
-const DEST_DB = requireEnv("MONITOR_DB_PATH");
+const DEST_DB = requireEnv("DB_PATH");
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -110,9 +109,8 @@ function main() {
     throw new Error("Snapshot missing 'tables'. Export it using the NEW dev/exportSnapshot.js.");
   }
 
-  const db = new Database(DEST_DB, { fileMustExist: true });
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
+  const db = openDb({ fileMustExist: true });
+  initSchema(db);
 
   try {
     // Import order must respect FKs:

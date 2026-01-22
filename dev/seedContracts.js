@@ -10,7 +10,13 @@ require("dotenv").config({
   quiet: true,
 });
 
-const DB_PATH = path.join(__dirname, "..", "data", "monitor.db");
+function requireEnv(name) {
+  const v = process.env[name];
+  if (!v) throw new Error(`Missing required env var: ${name}`);
+  return v;
+}
+
+const DB_PATH = requireEnv("DB_PATH");
 
 // Config locations
 const LOAN_CONFIG_PATH = path.join(__dirname, "..", "data", "loan_contracts.json");

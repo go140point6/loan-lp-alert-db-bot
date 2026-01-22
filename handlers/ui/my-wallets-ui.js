@@ -55,6 +55,8 @@ function buildWalletsEmbed({ discordName, wallets }) {
         discordName ? `User: **${discordName}**` : null,
         "",
         "Add or remove wallets you want monitored.",
+        "Status = In Range or Out of Range.",
+        "Tier = how close you are to the edge within that status.",
       ]
         .filter(Boolean)
         .join("\n")
@@ -78,7 +80,8 @@ function buildWalletsEmbed({ discordName, wallets }) {
     const lines = list.map((w) => {
       const label = w.label ? `**${w.label}** ` : "";
       const walletLink = formatAddressLink(w.chain_id, w.address_eip55);
-      return `• ${label}${walletLink}`;
+      const lpMode = w.lp_alerts_status_only === 1 ? "LP alerts: status only" : "LP alerts: status + tier";
+      return `• ${label}${walletLink} _(${lpMode})_`;
     });
     embed.addFields({ name: chain, value: lines.join("\n"), inline: false });
   }
@@ -95,6 +98,10 @@ function mainButtonsRow({ userKey }) {
     new ButtonBuilder()
       .setCustomId(`mw:remove:${userKey}`)
       .setLabel("Remove wallet")
+      .setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder()
+      .setCustomId(`mw:flags:${userKey}`)
+      .setLabel("Flags")
       .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId(`mw:done:${userKey}`)
@@ -143,6 +150,28 @@ function removeSelectRow({ userKey, wallets }) {
   const menu = new StringSelectMenuBuilder()
     .setCustomId(`mw:rmselect:${userKey}`)
     .setPlaceholder("Select a wallet to disable")
+    .setMinValues(1)
+    .setMaxValues(1)
+    .addOptions(options);
+
+  return new ActionRowBuilder().addComponents(menu);
+}
+
+function flagsSelectRow({ userKey, wallets }) {
+  const enabled = (wallets || []).filter((w) => w.is_enabled === 1);
+
+  const options = enabled.slice(0, 25).map((w) => {
+    const lpMode = w.lp_alerts_status_only === 1 ? "LP: status only" : "LP: status + tier";
+    return {
+      label: `${w.chain_id} ${w.label ? `— ${w.label}` : ""}`.trim(),
+      description: `${shortenAddress(w.address_eip55)} · ${lpMode}`,
+      value: String(w.id),
+    };
+  });
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId(`mw:flagsel:${userKey}`)
+    .setPlaceholder("Select a wallet to toggle LP alert mode")
     .setMinValues(1)
     .setMaxValues(1)
     .addOptions(options);
@@ -223,6 +252,26 @@ function renderRemovePick({ actorId, userId, q }) {
     content: "",
     embeds: [embed],
     components: [removeSelectRow({ userKey: actorId, wallets }), cancelRow({ userKey: actorId })],
+  };
+}
+
+function renderFlagsPick({ actorId, userId, q }) {
+  const wallets = q.selUserWallets.all(userId);
+  const enabled = wallets.filter((w) => w.is_enabled === 1);
+
+  const embed = new EmbedBuilder()
+    .setTitle("Wallet Flags")
+    .setDescription("Toggle LP alert mode for a wallet (status-only vs status + tier).");
+
+  if (!enabled.length) {
+    embed.addFields({ name: "Wallets", value: "_No enabled wallets to update._" });
+    return { content: "", embeds: [embed], components: [cancelRow({ userKey: actorId })] };
+  }
+
+  return {
+    content: "",
+    embeds: [embed],
+    components: [flagsSelectRow({ userKey: actorId, wallets }), cancelRow({ userKey: actorId })],
   };
 }
 
@@ -346,6 +395,11 @@ async function handleMyWalletsInteraction(interaction) {
         return true;
       }
 
+      if (action === "flags") {
+        await interaction.update(renderFlagsPick({ actorId, userId, q })).catch(() => {});
+        return true;
+      }
+
       await ackUpdate(interaction);
       return true;
     }
@@ -377,6 +431,30 @@ async function handleMyWalletsInteraction(interaction) {
         }
 
         q.disableWallet.run(walletId, userId);
+        await interaction.update(renderMain({ actorId, discordName, userId, q })).catch(() => {});
+        return true;
+      }
+
+      if (action === "flagsel") {
+        const walletIdStr = interaction.values?.[0];
+        const walletId = Number(walletIdStr);
+
+        if (!Number.isFinite(walletId)) {
+          await interaction.update(renderMain({ actorId, discordName, userId, q })).catch(() => {});
+          await replyOnce(interaction, "❌ Invalid wallet selection.", ephFlags);
+          return true;
+        }
+
+        const walletRow = q.selUserWalletByIdForUser.get(walletId, userId);
+        if (!walletRow) {
+          await interaction.update(renderMain({ actorId, discordName, userId, q })).catch(() => {});
+          await replyOnce(interaction, "❌ Wallet not found for your user.", ephFlags);
+          return true;
+        }
+
+        const nextVal = walletRow.lp_alerts_status_only === 1 ? 0 : 1;
+        q.setWalletLpStatusOnly.run(nextVal, walletId, userId);
+
         await interaction.update(renderMain({ actorId, discordName, userId, q })).catch(() => {});
         return true;
       }

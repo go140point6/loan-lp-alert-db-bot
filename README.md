@@ -24,7 +24,7 @@ Uniswap v3 LP positions with range status, estimated amounts from liquidity, and
 <img src="img/my-lp.png" alt="/my-lp screenshot" width="720">
 
 ### /my-wallets
-Tracked wallets and linked positions, built for a quick coverage check.
+Tracked wallets and linked positions, built for a quick coverage check. Includes an LP alert flag to suppress tier-only updates so you only get in-range/out-of-range changes when preferred.
 
 <img src="img/my-wallets.png" alt="/my-wallets screenshot" width="720">
 
@@ -40,7 +40,8 @@ Ignore noisy or irrelevant on-chain transactions to keep alerts focused on what 
 ### Alert engine
 Stateful alerting for liquidation/redemption thresholds and position risk changes with deduped notifications and tiered severity.
 
-<img src="img/alert-update.png" alt="Alert engine screenshot" width="720">
+<img src="img/alert-improving.png" alt="Alert improving example" width="49%">
+<img src="img/alert-worsening.png" alt="Alert worsening example" width="49%">
 
 ### Daily heartbeat DM
 A daily summary DM with tracked positions, current status, and key liquidity/health signals.

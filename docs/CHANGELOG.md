@@ -4,6 +4,11 @@ All notable, user-facing changes are documented here.
 
 ---
 
+## [2026-01-22]
+
+### Added
+- Per-wallet LP alert flag to suppress tier-only updates and only notify on in-range/out-of-range status changes.
+
 ## [2026-01-21]
 
 ### Changed

@@ -251,6 +251,7 @@ CREATE TABLE user_wallets (
   address_eip55   TEXT NOT NULL,
 
   label           TEXT,
+  lp_alerts_status_only INTEGER NOT NULL DEFAULT 0 CHECK (lp_alerts_status_only IN (0,1)),
   is_enabled      INTEGER NOT NULL DEFAULT 1 CHECK (is_enabled IN (0,1)),
 
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),

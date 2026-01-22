@@ -15,6 +15,7 @@ Use the `/my-wallets` command to add a wallet address you want the bot to track.
 **What you’ll see:**
 - The wallet listed with the label you chose.
 - Any detected positions tied to that wallet will appear over time.
+- Optional flags to control LP alert behavior (status-only vs status + tier).
 
 [Screenshot: /my-wallets add flow]
 
@@ -75,4 +76,3 @@ Once per day, the bot sends a summary DM with the current state of your tracked 
 
 Discord automatically shows image previews at a fixed inline size and lets users click to view full size.  
 You can post images directly in the channel; they will appear as uniform previews, and users can click to expand.
-
