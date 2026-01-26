@@ -12,6 +12,7 @@ function validateEnv() {
     "FIRELIGHT_CHANNEL_ID",
     "FIRELIGHT_POLL_MIN",
     "FIRELIGHT_VAULT_ADDRESS",
+    "FIRELIGHT_OPEN_BUFFER",
   ];
 
   const missing = requiredVars.filter(
