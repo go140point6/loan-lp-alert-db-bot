@@ -27,6 +27,7 @@ function requireNumberEnv(name) {
 const FIRELIGHT_CHANNEL_ID = requireEnv("FIRELIGHT_CHANNEL_ID");
 const FIRELIGHT_POLL_MIN = requireNumberEnv("FIRELIGHT_POLL_MIN");
 const FIRELIGHT_VAULT_ADDRESS = requireEnv("FIRELIGHT_VAULT_ADDRESS");
+const FIRELIGHT_OPEN_BUFFER = requireNumberEnv("FIRELIGHT_OPEN_BUFFER");
 
 const STATE_OPEN = "OPEN";
 const STATE_CLOSED = "CLOSED";
@@ -76,13 +77,14 @@ async function readFirelightState() {
   const limit = Number(ethers.formatUnits(limitRaw, decimals));
 
   const capacityRemaining = limit - assets;
-  const isOpen = assets < limit;
+  const isOpen = capacityRemaining >= FIRELIGHT_OPEN_BUFFER;
   const state = isOpen ? STATE_OPEN : STATE_CLOSED;
 
   logger.debug("[firelight] vault status", {
     assets,
     limit,
     capacityRemaining,
+    openBuffer: FIRELIGHT_OPEN_BUFFER,
     state,
   });
 
