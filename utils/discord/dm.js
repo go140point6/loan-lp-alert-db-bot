@@ -62,4 +62,70 @@ async function ensureDmOnboarding({
   }
 }
 
-module.exports = { ensureDmOnboarding };
+async function sendChannelEphemeral(channel, content, ttlMs = 15000) {
+  if (!channel || typeof channel.send !== "function") return;
+  try {
+    const msg = await channel.send({ content });
+    setTimeout(() => {
+      msg.delete().catch(() => {});
+    }, ttlMs);
+  } catch (_) {}
+}
+
+async function sendDmOrChannelNotice({
+  user,
+  userId,
+  discordId,
+  acceptsDm,
+  setUserDmStmt,
+  channel,
+  dmContent,
+}) {
+  if (!userId) {
+    throw new Error("sendDmOrChannelNotice: userId is required (users.id PK)");
+  }
+  if (!setUserDmStmt || typeof setUserDmStmt.run !== "function") {
+    throw new Error("sendDmOrChannelNotice: setUserDmStmt is required (must have .run)");
+  }
+  if (!user || typeof user.send !== "function") {
+    throw new Error("sendDmOrChannelNotice: user is required");
+  }
+
+  const warnText =
+    "⚠️ I wasn't able to send you a DM. Enable DMs from server members in **User Settings → Privacy & Safety** if you'd like alerts.";
+
+  const accepts = Number(acceptsDm) === 1;
+  if (accepts) {
+    try {
+      await user.send(dmContent);
+      return { canDm: true, sent: true, skippedProbe: true };
+    } catch (err) {
+      setUserDmStmt.run(0, userId);
+      logger.warn("[dm] direct DM failed (previously accepted)", {
+        userId,
+        discordId,
+        error: err?.message || String(err),
+      });
+      await sendChannelEphemeral(channel, warnText);
+      return { canDm: false, sent: false, error: err?.message || String(err) };
+    }
+  }
+
+  try {
+    await user.send(dmContent);
+    setUserDmStmt.run(1, userId);
+    logger.info("[dm] direct DM sent successfully", { userId, discordId });
+    return { canDm: true, sent: true };
+  } catch (err) {
+    setUserDmStmt.run(0, userId);
+    logger.warn("[dm] direct DM failed", {
+      userId,
+      discordId,
+      error: err?.message || String(err),
+    });
+    await sendChannelEphemeral(channel, warnText);
+    return { canDm: false, sent: false, error: err?.message || String(err) };
+  }
+}
+
+module.exports = { ensureDmOnboarding, sendDmOrChannelNotice };

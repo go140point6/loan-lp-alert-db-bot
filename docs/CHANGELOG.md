@@ -14,6 +14,17 @@ All notable, user-facing changes are documented here.
 - Daily heartbeat loan layout tightened with clearer liquidation/redemption sections and meaning lines.
 - `/test-alerts` expanded for debt-ahead and per-protocol testing (IR and liquidation).
 
+## [2026-01-26]
+
+### Added
+- Firelight signal channel with a single live status message (OPEN/CLOSED/UNKNOWN).
+- 🔥 reaction subscriptions for Firelight DMs when capacity state flips.
+- Admin commands `!!postfirelight` and `!!editfirelight` to seed and refresh the Firelight message.
+- `!!help` for a quick command summary.
+
+### Changed
+- Firelight capacity now uses on-chain `depositLimit` vs `totalAssets` for open/closed state.
+
 ## [2026-01-22]
 
 ### Added

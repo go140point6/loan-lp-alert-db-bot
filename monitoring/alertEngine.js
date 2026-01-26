@@ -317,7 +317,7 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
         { name: "Debt Total", value: debtTotalText, inline: true },
         { name: "Ahead %", value: aheadPctText, inline: true },
         {
-          name: "Redemption Position - Higher is safer",
+          name: "Redemption Position - Higher % = safer",
           value: renderPositionBar(debtAheadPct),
           inline: false,
         },
@@ -389,7 +389,7 @@ async function sendDmToUser({ userId, phase, alertType, logPrefix, message, meta
           inline: true,
         },
         {
-          name: "Liquidation Position - Higher is safer",
+          name: "Liquidation Position - Higher % = safer",
           value: renderPositionBar(meta?.liquidationBufferFrac),
           inline: false,
         },

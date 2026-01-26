@@ -6,9 +6,10 @@ const { prepareQueries } = require("../db/queries");
 const { ensureDmOnboarding } = require("../utils/discord/dm");
 const { ephemeralFlags } = require("../utils/discord/ephemerals");
 const { createDecimalFormatter } = require("../utils/intlNumberFormats");
-const { formatLoanTroveLink } = require("../utils/links");
+const { formatLoanTroveLink, formatAddressLink } = require("../utils/links");
 const logger = require("../utils/logger");
 const { getTestOffsets, getDebtAheadOffsetPpForProtocol } = require("../monitoring/testOffsets");
+const { shortenAddress } = require("../utils/ethers/shortenAddress");
 
 function requireNumberEnv(name) {
   const raw = process.env[name];
@@ -217,6 +218,10 @@ module.exports = {
 
         const valueLines = [];
         valueLines.push(`Trove: ${idLink}`);
+        if (s.owner) {
+          const walletText = formatAddressLink(s.chainId, s.owner) || `**${shortenAddress(s.owner)}**`;
+          valueLines.push(`Wallet: ${walletText}`);
+        }
 
         valueLines.push(`Status: **${s.status || "UNKNOWN"}**`);
 
@@ -281,7 +286,7 @@ module.exports = {
           valueLines.push(
             `Redemption debt: **${fmtNum2(debtAheadVal)}** vs total **${fmtNum2(totalDebtVal)}**`
           );
-          valueLines.push(`Redemption tier: **${tierVal}**${pct} - Higher is safer`);
+          valueLines.push(`Redemption tier: **${tierVal}**${pct} - Higher % = safer`);
           valueLines.push(`Redemption position: ${renderPositionBar(pctVal)}`);
           valueLines.push(`Meaning: ${redemptionMeaning(tierVal, aheadPctText)}`);
         }

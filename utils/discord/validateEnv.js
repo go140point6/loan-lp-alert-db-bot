@@ -4,7 +4,15 @@ const log = require("../logger");
 
 function validateEnv() {
   // Add any additional required env vars here
-  const requiredVars = ["BOT_TOKEN", "CLIENT_ID", "GUILD_ID" ];
+  const requiredVars = [
+    "BOT_TOKEN",
+    "CLIENT_ID",
+    "GUILD_ID",
+    "DB_PATH",
+    "FIRELIGHT_CHANNEL_ID",
+    "FIRELIGHT_POLL_MIN",
+    "FIRELIGHT_VAULT_ADDRESS",
+  ];
 
   const missing = requiredVars.filter(
     (key) => !process.env[key] || !process.env[key].trim()

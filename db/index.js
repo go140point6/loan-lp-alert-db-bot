@@ -145,6 +145,23 @@ function initSchema(db) {
     updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
+  CREATE TABLE IF NOT EXISTS firelight_config (
+    id             INTEGER PRIMARY KEY CHECK (id = 1),
+    channel_id     TEXT NOT NULL,
+    message_id     TEXT NOT NULL,
+    last_state     TEXT,
+    last_assets    TEXT,
+    last_checked_at TEXT,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS firelight_subscriptions (
+    user_id     INTEGER PRIMARY KEY,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS user_wallets (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id         INTEGER NOT NULL,

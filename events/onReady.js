@@ -7,6 +7,7 @@ const { loadCommands } = require("../handlers/commands/loadCommands");
 const { deployGuildCommands } = require("../handlers/commands/deployGuildCommands");
 const { startMonitoringJob } = require("../jobs/monitoringJob");
 const { startHeartbeatJob } = require("../jobs/heartbeatJob");
+const { startFirelightJob } = require("../jobs/firelightJob");
 const { setAlertEngineClient } = require("../monitoring/alertEngine");
 
 async function onReady(client) {
@@ -25,6 +26,7 @@ async function onReady(client) {
   // Start background jobs
   startMonitoringJob();
   startHeartbeatJob(client);
+  startFirelightJob(client);
 }
 
 module.exports = { onReady };

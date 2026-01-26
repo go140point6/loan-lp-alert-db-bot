@@ -5,11 +5,12 @@ require("dotenv").config({
   quiet: true,
 });
 
-const { Client, Events } = require("discord.js");
+const { Client, Events, Partials } = require("discord.js");
 const { GatewayIntentBits } = require("./config/GatewayIntentBits");
 const { onReady } = require("./events/onReady");
 const { onInteraction } = require("./events/onInteraction");
 const { onMessage } = require("./events/onMessage");
+const { onReactionAdd, onReactionRemove } = require("./events/onReaction");
 const { validateEnv } = require("./utils/discord/validateEnv");
 const log = require("./utils/logger");
 
@@ -30,7 +31,10 @@ process.on("uncaughtException", (err) => {
 (async () => {
   validateEnv();
 
-  const client = new Client({ intents: GatewayIntentBits });
+  const client = new Client({
+    intents: GatewayIntentBits,
+    partials: [Partials.Message, Partials.Channel, Partials.Reaction],
+  });
   module.exports = client;
 
   client.once(Events.ClientReady, async () => {
@@ -54,6 +58,22 @@ process.on("uncaughtException", (err) => {
       await onMessage(message);
     } catch (err) {
       log.error("MessageCreate handler failed:", err);
+    }
+  });
+
+  client.on(Events.MessageReactionAdd, async (reaction, user) => {
+    try {
+      await onReactionAdd(reaction, user);
+    } catch (err) {
+      log.error("MessageReactionAdd handler failed:", err);
+    }
+  });
+
+  client.on(Events.MessageReactionRemove, async (reaction, user) => {
+    try {
+      await onReactionRemove(reaction, user);
+    } catch (err) {
+      log.error("MessageReactionRemove handler failed:", err);
     }
   });
 

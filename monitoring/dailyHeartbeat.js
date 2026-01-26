@@ -6,8 +6,8 @@ const { createDecimalFormatter } = require("../utils/intlNumberFormats");
 const { getDb } = require("../db");
 const logger = require("../utils/logger");
 const { shortenTroveId } = require("../utils/ethers/shortenTroveId");
-const { formatLoanTroveLink } = require("../utils/links");
-const { formatLpPositionLink } = require("../utils/links");
+const { shortenAddress } = require("../utils/ethers/shortenAddress");
+const { formatLoanTroveLink, formatLpPositionLink, formatAddressLink } = require("../utils/links");
 
 function requireNumberEnv(name) {
   const raw = process.env[name];
@@ -112,6 +112,10 @@ function formatLoanField(s) {
   const title = `${tierEmoji} ${s.protocol || "UNKNOWN"} (${s.chainId || "?"})`;
   const lines = [];
   lines.push(`Trove: ${troveLink}`);
+  if (s.owner) {
+    const walletText = formatAddressLink(s.chainId, s.owner) || shortenAddress(s.owner);
+    lines.push(`Wallet: ${walletText}`);
+  }
 
   const status = s.status || "UNKNOWN";
   lines.push(`Status: ${status}`);
@@ -189,6 +193,10 @@ function formatLpField(s) {
   const title = `${s.protocol || "UNKNOWN"} ${pair} (${s.chainId || "?"})`;
   const parts = [];
   parts.push(`Token: ${tokenLink}`);
+  if (s.owner) {
+    const walletText = formatAddressLink(s.chainId, s.owner) || shortenAddress(s.owner);
+    parts.push(`Wallet: ${walletText}`);
+  }
 
   const hasAmounts =
     typeof s.amount0 === "number" &&

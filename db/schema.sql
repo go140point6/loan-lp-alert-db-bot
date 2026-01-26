@@ -6,6 +6,8 @@ PRAGMA foreign_keys = ON;
 DROP TABLE IF EXISTS alert_log;
 DROP TABLE IF EXISTS alert_state;
 DROP TABLE IF EXISTS position_ignores;
+DROP TABLE IF EXISTS firelight_subscriptions;
+DROP TABLE IF EXISTS firelight_config;
 
 DROP TABLE IF EXISTS global_params;
 DROP TABLE IF EXISTS loan_token_meta;
@@ -238,6 +240,26 @@ CREATE TABLE users (
 
 CREATE INDEX idx_users_discord_id ON users(discord_id);
 CREATE INDEX idx_users_accepts_dm ON users(accepts_dm);
+
+-- =========================================================
+-- FIRELIGHT CONFIG / SUBSCRIPTIONS
+-- =========================================================
+CREATE TABLE firelight_config (
+  id             INTEGER PRIMARY KEY CHECK (id = 1),
+  channel_id     TEXT NOT NULL,
+  message_id     TEXT NOT NULL,
+  last_state     TEXT,
+  last_assets    TEXT,
+  last_checked_at TEXT,
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE firelight_subscriptions (
+  user_id     INTEGER PRIMARY KEY,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 
 -- =========================================================
 -- USER WALLETS

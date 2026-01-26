@@ -29,8 +29,9 @@ function chunk(arr, size) {
 const { createDecimalFormatter } = require("../utils/intlNumberFormats");
 const { formatBandRuler, classifyLpRangeTier } = require("../monitoring/lpMonitor");
 const { applyLpTickShift, getTestOffsets } = require("../monitoring/testOffsets");
-const { formatLpPositionLink } = require("../utils/links");
+const { formatLpPositionLink, formatAddressLink } = require("../utils/links");
 const { shortenTroveId } = require("../utils/ethers/shortenTroveId");
+const { shortenAddress } = require("../utils/ethers/shortenAddress");
 
 // 4 decimals, thousands separators
 const fmt4 = createDecimalFormatter(0, 4);
@@ -165,6 +166,10 @@ module.exports = {
         if (s.pairLabel) valueLines.push(`Pair: **${s.pairLabel}**`);
         else if (sym0 && sym1) valueLines.push(`Pair: **${sym0} - ${sym1}**`);
         valueLines.push(`Token: ${tokenLink}`);
+        if (s.owner) {
+          const walletText = formatAddressLink(s.chainId, s.owner) || `**${shortenAddress(s.owner)}**`;
+          valueLines.push(`Wallet: ${walletText}`);
+        }
 
         // ---- NEW: principal amounts
         const a0 = fmtNum(s.amount0, 6);
