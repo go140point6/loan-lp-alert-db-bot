@@ -82,8 +82,10 @@ module.exports = {
         return;
       }
 
-      const displaySummaries = summaries.map((s) => {
-        const out = { ...s };
+      const displaySummaries = summaries
+        .filter((s) => s.status !== "INACTIVE")
+        .map((s) => {
+          const out = { ...s };
         if (
           hasLpShift &&
           Number.isFinite(s.currentTick) &&
@@ -104,8 +106,8 @@ module.exports = {
           out.lpPositionFrac = lpClass.positionFrac;
           out.lpDistanceFrac = lpClass.distanceFrac;
         }
-        return out;
-      });
+          return out;
+        });
 
       displaySummaries.sort((a, b) => {
         const rangeOrder = { OUT_OF_RANGE: 0, UNKNOWN: 1, IN_RANGE: 2 };
@@ -213,22 +215,60 @@ module.exports = {
         return { name: header, value };
       });
 
-      const fieldChunks = chunk(fields, 25).slice(0, 10);
+      const MAX_EMBED_CHARS = 5200;
+      const descText = descLines.join("\n");
+      const embeds = [];
+      let currentFields = [];
+      let currentSize = 0;
+      let embedIndex = 0;
 
-      const embeds = fieldChunks.map((fc, idx) => {
+      const baseSizeFor = (isFirst) =>
+        (isFirst ? descText.length : 0) +
+        (isFirst ? "My LP Positions".length : "My LP Positions (cont.)".length) +
+        200;
+
+      const fieldSize = (f) => (f.name?.length || 0) + (f.value?.length || 0);
+
+      const flushEmbed = (isFirst) => {
+        if (!currentFields.length) return;
         const e = new EmbedBuilder()
           .setColor("DarkRed")
-          .setTitle(idx === 0 ? "My LP Positions" : "My LP Positions (cont.)")
+          .setTitle(isFirst ? "My LP Positions" : "My LP Positions (cont.)")
           .setTimestamp();
-
-        if (idx === 0) {
-          e.setDescription(descLines.join("\n"));
+        if (isFirst) {
+          e.setDescription(descText);
           if (interaction.client?.user) e.setThumbnail(interaction.client.user.displayAvatarURL());
         }
+        e.addFields(currentFields);
+        embeds.push(e);
+        currentFields = [];
+        currentSize = 0;
+      };
 
-        e.addFields(fc);
-        return e;
-      });
+      currentSize = baseSizeFor(true);
+      for (const f of fields) {
+        const size = fieldSize(f);
+        logger.debug(
+          `[my-lp] field size name=${f.name?.length || 0} value=${f.value?.length || 0} total=${size}`
+        );
+        if (
+          currentFields.length >= 25 ||
+          currentSize + size > MAX_EMBED_CHARS
+        ) {
+          logger.debug(
+            `[my-lp] flushing embed idx=${embedIndex} fields=${currentFields.length} size=${currentSize}`
+          );
+          flushEmbed(embedIndex === 0);
+          embedIndex += 1;
+          currentSize = baseSizeFor(false);
+        }
+        currentFields.push(f);
+        currentSize += size;
+      }
+      flushEmbed(embedIndex === 0);
+      logger.debug(
+        `[my-lp] embeds=${embeds.length} totalFields=${fields.length}`
+      );
 
       await interaction.editReply({ embeds });
     } catch (error) {
