@@ -25,6 +25,14 @@ All notable, user-facing changes are documented here.
 ### Changed
 - Firelight capacity now uses on-chain `depositLimit` vs `totalAssets` for open/closed state.
 
+## [2026-01-28]
+
+### Added
+- `/redemption-rate` command for target IR guidance by contract and loan, using recent snapshots.
+
+### Changed
+- Snapshot refresh behavior now uses time/debt gates and avoids unnecessary refreshes unless new tracked positions are detected.
+
 ## [2026-01-22]
 
 ### Added

@@ -8,6 +8,7 @@ DROP TABLE IF EXISTS alert_state;
 DROP TABLE IF EXISTS position_ignores;
 DROP TABLE IF EXISTS firelight_subscriptions;
 DROP TABLE IF EXISTS firelight_config;
+DROP TABLE IF EXISTS redemption_rate_snapshots;
 
 DROP TABLE IF EXISTS global_params;
 DROP TABLE IF EXISTS loan_token_meta;
@@ -260,6 +261,20 @@ CREATE TABLE firelight_subscriptions (
   created_at  TEXT NOT NULL DEFAULT (datetime('now')),
   FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
+
+-- =========================================================
+-- REDEMPTION RATE SNAPSHOTS (per contract)
+-- =========================================================
+CREATE TABLE redemption_rate_snapshots (
+  contract_id   INTEGER PRIMARY KEY,
+  chain_id      TEXT NOT NULL,
+  protocol      TEXT NOT NULL,
+  snapshot_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  snapshot_json TEXT NOT NULL,
+  FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_redemption_rate_protocol ON redemption_rate_snapshots(protocol);
 
 -- =========================================================
 -- USER WALLETS

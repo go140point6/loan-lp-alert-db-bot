@@ -249,6 +249,15 @@ function initSchema(db) {
     FOREIGN KEY (contract_id) REFERENCES contracts(id)     ON DELETE CASCADE
   );
 
+  CREATE TABLE IF NOT EXISTS redemption_rate_snapshots (
+    contract_id   INTEGER PRIMARY KEY,
+    chain_id      TEXT NOT NULL,
+    protocol      TEXT NOT NULL,
+    snapshot_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    snapshot_json TEXT NOT NULL,
+    FOREIGN KEY (contract_id) REFERENCES contracts(id) ON DELETE CASCADE
+  );
+
   CREATE TABLE IF NOT EXISTS lp_position_snapshots (
     user_id         INTEGER NOT NULL,
     wallet_id       INTEGER NOT NULL,
@@ -268,6 +277,7 @@ function initSchema(db) {
 
   CREATE INDEX IF NOT EXISTS idx_contracts_chain_kind ON contracts(chain_id, kind);
   CREATE INDEX IF NOT EXISTS idx_contracts_protocol   ON contracts(protocol);
+  CREATE INDEX IF NOT EXISTS idx_redemption_rate_protocol ON redemption_rate_snapshots(protocol);
   CREATE INDEX IF NOT EXISTS idx_contract_scan_last_block ON contract_scan_cursors(last_scanned_block);
   CREATE INDEX IF NOT EXISTS idx_nft_transfers_contract_block ON nft_transfers(contract_id, block_number);
   CREATE INDEX IF NOT EXISTS idx_nft_transfers_to            ON nft_transfers(contract_id, to_lower);

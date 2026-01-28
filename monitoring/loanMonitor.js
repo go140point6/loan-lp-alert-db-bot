@@ -600,6 +600,7 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
   const debtNorm = Number(ethers.formatUnits(latest.entireDebt, 18));
   const collNorm = Number(ethers.formatUnits(latest.entireColl, collDecimals));
   const interestPct = Number(ethers.formatUnits(latest.annualInterestRate, 18)) * 100.0;
+  const lastInterestRateAdjTime = Number(latest.lastInterestRateAdjTime);
 
   const statusStr = troveStatusToString(statusCode);
 
@@ -627,6 +628,7 @@ async function summarizeLoanPosition(provider, chainId, protocol, row, globalIrM
     globalIrPct,
     redemptionTier: redClass.tier,
     redemptionDiffPct: redClass.diffPct,
+    lastInterestRateAdjTime,
 
     status: statusStr,
 

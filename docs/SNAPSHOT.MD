@@ -25,6 +25,7 @@ Snapshots preserve:
 - Scan cursor progress
 - Discovered NFT ownership (`nft_tokens`)
 - Optional metadata and bot state
+- Cached position snapshots used by commands and alerts
 
 Snapshots are **not** incremental backups.  
 They are intended for **rebuild & restore** workflows.
@@ -46,6 +47,9 @@ They are intended for **rebuild & restore** workflows.
 - `user_wallets`
 - `position_ignores`
 - `alert_state`
+- `loan_position_snapshots`
+- `lp_position_snapshots`
+- `redemption_rate_snapshots`
 
 ### Optional tables (large)
 

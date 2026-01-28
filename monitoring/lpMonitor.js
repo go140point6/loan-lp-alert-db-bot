@@ -474,7 +474,6 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
   const pos = await pm.positions(tokenIdBN);
 
   const liquidity = BigInt(pos.liquidity.toString());
-  if (liquidity === 0n) return null;
 
   const token0 = pos.token0;
   const token1 = pos.token1;
@@ -498,6 +497,41 @@ async function summarizeLpPosition(provider, chainId, protocol, row) {
   try { dec1 = await getTokenDecimals(provider, token1); } catch (_) {}
 
   const pairLabel = dbPairLabel || `${token0Symbol}-${token1Symbol}`;
+
+  if (liquidity === 0n) {
+    return {
+      userId,
+      walletId,
+      contractId,
+      protocol,
+      chainId,
+      owner,
+      walletLabel,
+      tokenId,
+      nftContract: contract,
+      token0,
+      token1,
+      token0Symbol,
+      token1Symbol,
+      pairLabel,
+      fee,
+      tickLower,
+      tickUpper,
+      currentTick: null,
+      liquidity: "0",
+      status: "INACTIVE",
+      rangeStatus: "INACTIVE",
+      poolAddr: null,
+      amount0: null,
+      amount1: null,
+      fees0: null,
+      fees1: null,
+      lpRangeTier: "UNKNOWN",
+      lpRangeLabel: "inactive",
+      lpPositionFrac: null,
+      lpDistanceFrac: null,
+    };
+  }
 
   let poolAddr = null;
   let currentTick = null;
@@ -704,6 +738,8 @@ async function refreshLpSnapshots() {
   const runId = String(Date.now());
   const rows = getMonitoredLpRows();
   if (!rows || rows.length === 0) return;
+  let ok = 0;
+  let failed = 0;
 
   const providers = new Map();
   const getP = (chainId) => {
@@ -730,8 +766,14 @@ async function refreshLpSnapshots() {
         row.protocol || "UNKNOWN_PROTOCOL",
         row
       );
-      if (summary) upsertLpSnapshot(summary, runId);
+      if (summary) {
+        upsertLpSnapshot(summary, runId);
+        ok += 1;
+      } else {
+        failed += 1;
+      }
     } catch (err) {
+      failed += 1;
       logger.error(
         `[LP] Failed snapshot tokenId=${row.tokenId} on ${chainId}:`,
         err?.message || err
@@ -740,6 +782,9 @@ async function refreshLpSnapshots() {
   }
 
   cleanupLpSnapshots(runId);
+  logger.debug(
+    `[LP] Snapshot refresh complete: rows=${rows.length} ok=${ok} failed=${failed}`
+  );
 }
 
 // -----------------------------

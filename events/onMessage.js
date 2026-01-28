@@ -31,6 +31,7 @@ async function onMessage(message) {
       "• `/my-loans` — show monitored loan positions",
       "• `/my-lp` — show monitored LP positions",
       "• `/ignore-spam-tx` — manage ignored positions",
+      "• `/redemption-rate` — target IR by redemption tier",
       "",
       "Info commands:",
       "• `/entities` — system entities",

@@ -283,5 +283,6 @@ module.exports = {
   setDebtAheadBase,
   setPriceBase,
   setDebtAheadTierThresholds,
+  classifyDebtAheadTier,
   logRunApplied,
 };

@@ -203,7 +203,7 @@ module.exports = {
         if (s.lpRangeTier) {
           const labelText = s.lpRangeLabel ? ` – ${s.lpRangeLabel}` : "";
           const emoji = tierColorEmoji[s.lpRangeTier] || "⬜";
-          valueLines.push("```" + `${emoji} Range tier: ${s.lpRangeTier}${labelText}` + "```");
+          valueLines.push(`\`${emoji} Range tier: ${s.lpRangeTier}${labelText}\``);
         }
 
 

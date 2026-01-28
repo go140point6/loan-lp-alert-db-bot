@@ -60,6 +60,15 @@ async function onInteraction(interaction) {
       return;
     }
 
+    // ---- Autocomplete ----
+    if (interaction.isAutocomplete?.()) {
+      const command = interaction.client?.commands?.get(interaction.commandName);
+      if (command?.autocomplete) {
+        await command.autocomplete(interaction);
+      }
+      return;
+    }
+
     // ---- Slash commands ----
     if (interaction.isChatInputCommand?.()) {
       const command = interaction.client?.commands?.get(interaction.commandName);
